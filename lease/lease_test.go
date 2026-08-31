@@ -100,14 +100,22 @@ func TestReleaseOnlyByOwner(t *testing.T) {
 	if _, err := s.Acquire("bk", "alice", "", time.Hour); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.Release("bk", "bob"); err == nil {
+	if _, err := s.Release("bk", "bob"); err == nil {
 		t.Error("bob released alice's lease")
 	}
-	if err := s.Release("bk", "alice"); err != nil {
+	dropped, err := s.Release("bk", "alice")
+	if err != nil {
 		t.Errorf("owner release: %v", err)
 	}
-	if err := s.Release("bk", "alice"); err != nil {
+	if !dropped {
+		t.Error("owner release reported nothing to drop")
+	}
+	dropped, err = s.Release("bk", "alice")
+	if err != nil {
 		t.Errorf("releasing what is already gone must be quiet: %v", err)
+	}
+	if dropped {
+		t.Error("releasing what is already gone claimed to drop a lease")
 	}
 }
 

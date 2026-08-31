@@ -200,7 +200,7 @@ func withIndexLease(fn func() error) error {
 	if _, err := s.Acquire(resource, owner(), "index edit", 2*time.Minute); err != nil {
 		return fmt.Errorf("MEMORY.md is being edited: %w", err)
 	}
-	defer func() { _ = s.Release(resource, owner()) }()
+	defer func() { _, _ = s.Release(resource, owner()) }()
 	return fn()
 }
 
@@ -352,8 +352,13 @@ func release(args []string) error {
 	}
 	s := store()
 	for _, r := range args {
-		if err := s.Release(r, owner()); err != nil {
+		dropped, err := s.Release(r, owner())
+		if err != nil {
 			return err
+		}
+		if !dropped {
+			fmt.Printf("not held  %s\n", r)
+			continue
 		}
 		fmt.Printf("released %s\n", r)
 	}

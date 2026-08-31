@@ -171,21 +171,28 @@ func (s Store) read(p string) (Lease, error) {
 	return l, nil
 }
 
-// Release drops the lease if we hold it. Releasing something we do not hold is
-// an error worth seeing: it means two sessions disagree about who owns what.
-func (s Store) Release(resource, owner string) error {
+// Release drops the lease if we hold it, and reports whether there was one to
+// drop. A lease held by another session is an error worth seeing: it means two
+// sessions disagree about who owns what. A lease that is simply gone is not an
+// error -- releasing twice is allowed -- but the caller is told, because
+// "released" said of something never held carries no information, and a success
+// message that cannot fail is indistinguishable from one that did nothing.
+func (s Store) Release(resource, owner string) (bool, error) {
 	p := s.path(resource)
 	cur, err := s.read(p)
 	if errors.Is(err, os.ErrNotExist) {
-		return nil
+		return false, nil
 	}
 	if err != nil {
-		return err
+		return false, err
 	}
 	if cur.Owner != owner {
-		return &Held{By: cur}
+		return false, &Held{By: cur}
 	}
-	return os.Remove(p)
+	if err := os.Remove(p); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // List returns every lease, expired ones included, so a caller can show what is
