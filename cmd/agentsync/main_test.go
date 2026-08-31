@@ -155,3 +155,25 @@ func TestRepairPutsALineBackInItsSection(t *testing.T) {
 		t.Errorf("appears %d times", strings.Count(repaired, "c.md"))
 	}
 }
+
+// A memory is present when the index points at it, whatever the pointing text
+// says today. Testing the exact recorded text instead treats a corrected line
+// as a lost one, and "repairs" it by restoring the claim that was corrected --
+// leaving two rows for one memory, one of them false.
+func TestRowLinkingFindsARewordedEntry(t *testing.T) {
+	const index = "# Memory index\n" +
+		"- [old wording](thing.md) — was true yesterday\n" +
+		"- [other](other.md) — unrelated\n"
+
+	got := rowLinking(index, "thing")
+	if got != "- [old wording](thing.md) — was true yesterday" {
+		t.Errorf("did not find the row linking to thing.md: %q", got)
+	}
+	if rowLinking(index, "absent") != "" {
+		t.Error("found a row for a memory nothing links to")
+	}
+	// A name that is a prefix of another must not match it.
+	if rowLinking("- [x](thingamy.md) — n\n", "thing") != "" {
+		t.Error("thing matched thingamy.md")
+	}
+}

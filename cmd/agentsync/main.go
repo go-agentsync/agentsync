@@ -263,6 +263,19 @@ func memAdd(args []string) error {
 	return saveRecords(append(rs, record{Name: name, Line: line, Section: sec, Index: *idx, Added: time.Now()}))
 }
 
+// rowLinking returns the index row that links to name's memory file, or "" if
+// none does. It is the reachability test: a memory is present when something
+// points at it, whatever the pointing text happens to say today.
+func rowLinking(index, name string) string {
+	target := "(" + name + ".md)"
+	for _, ln := range strings.Split(index, "\n") {
+		if strings.Contains(ln, target) {
+			return ln
+		}
+	}
+	return ""
+}
+
 func memVerify(args []string) error {
 	fs := flag.NewFlagSet("mem-verify", flag.ExitOnError)
 	repair := fs.Bool("repair", true, "re-insert entries that have gone missing")
@@ -277,14 +290,26 @@ func memVerify(args []string) error {
 		fmt.Println("nothing recorded for this session")
 		return nil
 	}
-	missing := 0
-	for _, r := range rs {
+	missing, changed := 0, 0
+	for i, r := range rs {
 		b, err := os.ReadFile(r.Index)
 		if err != nil {
 			return err
 		}
 		if strings.Contains(string(b), r.Line) {
 			fmt.Printf("ok       %s\n", r.Name)
+			continue
+		}
+		// The recorded text is gone, but the entry may simply have been
+		// rewritten -- a line that has become false is meant to be corrected.
+		// What matters is whether the index still reaches the memory file, so
+		// that is what is checked. Re-inserting the old text here would restore
+		// a stale claim and leave two rows for one memory, which is worse than
+		// the loss it thinks it is repairing.
+		if row := rowLinking(string(b), r.Name); row != "" {
+			fmt.Printf("changed  %s\n", r.Name)
+			rs[i].Line = row
+			changed++
 			continue
 		}
 		missing++
@@ -303,6 +328,14 @@ func memVerify(args []string) error {
 			return err
 		}
 		fmt.Printf("REPAIRED %s\n", r.Name)
+	}
+	if changed > 0 {
+		// Persist the rewritten text, so the next run says "ok" rather than
+		// reporting the same edit for ever.
+		if err := saveRecords(rs); err != nil {
+			return err
+		}
+		fmt.Printf("\n%d index entr%s been reworded since being added, and still reach the memory.\n", changed, map[bool]string{true: "y has", false: "ies have"}[changed == 1])
 	}
 	if missing > 0 {
 		fmt.Printf("\n%d entr%s had been dropped from the index.\n", missing, map[bool]string{true: "y", false: "ies"}[missing == 1])
