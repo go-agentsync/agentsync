@@ -66,8 +66,105 @@ func (s Store) now() time.Time {
 	return time.Now()
 }
 
-// path maps a resource to a file name. Slashes and anything else awkward become
-// underscores so "owner/repo" is one flat file, and the original name is kept
+// forgeHosts are the hosts a resource may be written with in front of it.
+//
+// The list is closed on purpose. Guessing at "anything that looks like a host"
+// would have to decide what ".github" is -- a real repository name in every
+// organisation of this fleet, and one that a dot-means-host rule mistakes for a
+// domain. A name this does not recognise is left exactly as written.
+var forgeHosts = map[string]bool{
+	"github.com": true, "www.github.com": true,
+	"gitlab.com": true, "codeberg.org": true, "bitbucket.org": true,
+}
+
+// Normalize reduces a resource to the one key two sessions naming the same
+// thing differently have to land on.
+//
+// It exists because they did not. One session claimed "go-ansible/.github" and
+// another "github.com/go-ansible/.github"; both were granted, both believed
+// they held the repository, and the tool written to stop exactly that collision
+// reported no conflict because the two strings differ.
+//
+// A URL, an SSH remote and a bare owner/repo all come to the same key, and case
+// is not part of the identity: GitHub itself treats owner and repository names
+// case-insensitively.
+func Normalize(resource string) string {
+	s := strings.TrimSpace(resource)
+	for _, scheme := range []string{"https://", "http://", "ssh://", "git://"} {
+		s = strings.TrimPrefix(s, scheme)
+	}
+	// An SSH remote carries a user in front of the host, in either of the two
+	// shapes git uses: "user@host:owner/repo" and "user@host/owner/repo". The
+	// user is dropped in both; the host that may follow is left for the forge
+	// list below to decide about. Only what precedes the "@" is examined, and
+	// only when it is not itself a path, so a resource that merely contains an
+	// "@" is left alone.
+	if i := strings.Index(s, "@"); i >= 0 && !strings.Contains(s[:i], "/") {
+		rest := s[i+1:]
+		if j := strings.Index(rest, ":"); j >= 0 && !strings.Contains(rest[:j], "/") {
+			rest = rest[j+1:]
+		}
+		s = rest
+	}
+	s = strings.ToLower(strings.Trim(s, "/"))
+	parts := strings.Split(s, "/")
+	if len(parts) > 1 && forgeHosts[parts[0]] {
+		parts = parts[1:]
+	}
+	if n := len(parts); n > 0 {
+		parts[n-1] = strings.TrimSuffix(parts[n-1], ".git")
+	}
+	return strings.Join(parts, "/")
+}
+
+// covers reports whether a names the same resource as b or one enclosing it.
+//
+// The comparison is by path SEGMENT and not by string prefix: "go-tex" must not
+// be read as enclosing "go-texinfo", which a prefix test would say it does.
+func covers(a, b string) bool {
+	as, bs := strings.Split(a, "/"), strings.Split(b, "/")
+	if len(as) > len(bs) {
+		return false
+	}
+	for i := range as {
+		if as[i] != bs[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// overlapping reports a live lease that encloses this resource or sits inside
+// it, held by somebody else.
+//
+// An organisation and one of its repositories are not the same key and never
+// will be, so nothing but this makes them collide -- and two sessions working
+// the same repository, one having claimed the organisation around it, is the
+// collision this tool exists for.
+//
+// The exact key is left to the O_EXCL path below, which is what makes taking
+// over an expired lease and extending one's own lease work.
+func (s Store) overlapping(key, owner string, now time.Time) *Lease {
+	all, err := s.List()
+	if err != nil {
+		return nil // a directory that cannot be listed is not a conflict
+	}
+	for _, l := range all {
+		k := Normalize(l.Resource)
+		if k == key || l.Owner == owner || l.Expired(now) {
+			continue
+		}
+		if covers(k, key) || covers(key, k) {
+			held := l
+			return &held
+		}
+	}
+	return nil
+}
+
+// path maps a resource to a file name. The resource is normalised first, so two
+// spellings of one repository are one file. Slashes and anything else awkward
+// become underscores so "owner/repo" is flat, and the original name is kept
 // inside the file rather than encoded into it.
 func (s Store) path(resource string) string {
 	safe := strings.Map(func(r rune) rune {
@@ -77,7 +174,7 @@ func (s Store) path(resource string) string {
 		default:
 			return '_'
 		}
-	}, resource)
+	}, Normalize(resource))
 	if len(safe) > 120 {
 		safe = safe[:120]
 	}
@@ -101,17 +198,15 @@ func (s Store) Acquire(resource, owner, note string, ttl time.Duration) (Lease, 
 	if err != nil {
 		return Lease{}, err
 	}
+	if held := s.overlapping(Normalize(resource), owner, now); held != nil {
+		return Lease{}, &Held{By: *held}
+	}
 	p := s.path(resource)
 
 	for attempt := 0; attempt < 2; attempt++ {
-		f, err := os.OpenFile(p, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
+		err := createExclusive(p, body)
 		if err == nil {
-			_, werr := f.Write(body)
-			cerr := f.Close()
-			if werr != nil {
-				return Lease{}, werr
-			}
-			return l, cerr
+			return l, nil
 		}
 		if !errors.Is(err, os.ErrExist) {
 			return Lease{}, err
@@ -138,6 +233,43 @@ func (s Store) Acquire(resource, owner, note string, ttl time.Duration) (Lease, 
 		}
 	}
 	return Lease{}, fmt.Errorf("lease: %s: lost the race twice", resource)
+}
+
+// createExclusive puts a COMPLETE lease at p, or fails because one is already
+// there. Nothing in between is ever visible.
+//
+// Creating the file with O_EXCL and writing it afterwards is exclusive about
+// the NAME and not about the CONTENT: between the create and the write the
+// file exists and is empty. A second session arriving in that window reads an
+// empty file, cannot parse it, and -- following the rule that an unreadable
+// lease is a torn one -- DELETES it and takes the resource. Both sessions then
+// believe they hold it.
+//
+// That is not a hypothesis. The package's own concurrency test finds it: 24
+// racing sessions produce two or three winners about once in a hundred runs
+// (`go test -count=300 -run Concurrent`), and it had been there since the
+// package was written. It matters more than the odds suggest, because the two
+// winners never learn of each other -- which is the exact failure this package
+// exists to prevent.
+//
+// Writing the body first and then linking it into place fixes it: link is
+// atomic and refuses an existing name, so the lease is whole from the instant
+// it is visible.
+func createExclusive(p string, body []byte) error {
+	f, err := os.CreateTemp(filepath.Dir(p), ".lease-*.tmp")
+	if err != nil {
+		return err
+	}
+	tmp := f.Name()
+	defer os.Remove(tmp)
+	if _, err := f.Write(body); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	return os.Link(tmp, p)
 }
 
 func (s Store) write(p string, l Lease) (Lease, error) {
