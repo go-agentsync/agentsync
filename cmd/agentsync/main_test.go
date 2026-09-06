@@ -177,3 +177,111 @@ func TestRowLinkingFindsARewordedEntry(t *testing.T) {
 		t.Error("thing matched thingamy.md")
 	}
 }
+
+func TestWhatIsAResourceAndWhatOnlyLooksLikeOne(t *testing.T) {
+	// Go's flag package stops parsing at the first non-flag argument, so
+	// "agentsync claim go-widgets/toolkit --note 'adding X'" hands three
+	// arguments to the claim loop. 25 of the 158 leases in the shared
+	// directory arrived that way: 24 sentences and one literal "--note".
+	args := []string{
+		"go-widgets/toolkit",
+		"--note",
+		"adding Tray.SetTitle: text alongside icon",
+		"github.com/go-ansible/.github",
+		"-ttl",
+		"   ",
+		"localhost/tools/agentsync",
+	}
+	resources, rejected := sift(args)
+	wantRes := []string{"go-widgets/toolkit", "github.com/go-ansible/.github", "localhost/tools/agentsync"}
+	if strings.Join(resources, "|") != strings.Join(wantRes, "|") {
+		t.Errorf("resources = %q, want %q", resources, wantRes)
+	}
+	if len(rejected) != 4 {
+		t.Fatalf("rejected %d, want 4: %+v", len(rejected), rejected)
+	}
+	// Each rejection has to say WHY, or the caller cannot tell an option from
+	// a note from a typo.
+	for _, r := range rejected {
+		if r.why == "" {
+			t.Errorf("%q was dropped with no reason", r.arg)
+		}
+	}
+	if rejected[0].arg != "--note" || !strings.Contains(rejected[0].why, "option") {
+		t.Errorf("the flag was described as %q", rejected[0].why)
+	}
+	// The sentence is the option's value, and is dropped as that rather than
+	// for containing spaces -- the same argument reached by the stronger test.
+	if !strings.Contains(rejected[1].why, "value") {
+		t.Errorf("the sentence was described as %q", rejected[1].why)
+	}
+	if rejected[2].arg != "-ttl" || !strings.Contains(rejected[2].why, "option") {
+		t.Errorf("the second flag was described as %q", rejected[2].why)
+	}
+}
+
+func TestABlankArgumentStandingAloneIsNamedAsBlank(t *testing.T) {
+	resources, rejected := sift([]string{"go-pdfkit/ops", "   "})
+	if len(resources) != 1 {
+		t.Errorf("resources = %q", resources)
+	}
+	if len(rejected) != 1 || !strings.Contains(rejected[0].why, "empty") {
+		t.Errorf("rejected = %+v", rejected)
+	}
+}
+
+func TestASentenceStandingAloneIsNamedAsANote(t *testing.T) {
+	_, rejected := sift([]string{"adding Tray.SetTitle: text alongside icon"})
+	if len(rejected) != 1 || !strings.Contains(rejected[0].why, "note") {
+		t.Errorf("rejected = %+v", rejected)
+	}
+}
+
+func TestARealResourceIsNotDroppedForItsNeighbours(t *testing.T) {
+	// The point of dropping rather than refusing: the repository beside the
+	// mistake is still claimed, so "claim X && work" still proceeds. Refusing
+	// the whole call would stop work that a misplaced flag never endangered.
+	resources, rejected := sift([]string{"go-pdfkit/ops", "--note", "why"})
+	if len(resources) != 1 || resources[0] != "go-pdfkit/ops" {
+		t.Errorf("resources = %q", resources)
+	}
+	// "why" is one word, so nothing about the string itself distinguishes it
+	// from a repository. It is dropped because it is the option's VALUE.
+	if len(rejected) != 2 || !strings.Contains(rejected[1].why, "value") {
+		t.Errorf("rejected = %+v", rejected)
+	}
+}
+
+func TestAnOptionWrittenWithAnEqualsDoesNotEatWhatFollows(t *testing.T) {
+	resources, rejected := sift([]string{"--note=why", "go-pdfkit/ops"})
+	if len(resources) != 1 || resources[0] != "go-pdfkit/ops" {
+		t.Errorf("resources = %q, want the repository kept", resources)
+	}
+	if len(rejected) != 1 {
+		t.Errorf("rejected = %+v", rejected)
+	}
+}
+
+func TestATrailingOptionHasNoValueToEat(t *testing.T) {
+	resources, rejected := sift([]string{"go-pdfkit/ops", "--note"})
+	if len(resources) != 1 || len(rejected) != 1 {
+		t.Errorf("resources = %q, rejected = %+v", resources, rejected)
+	}
+}
+
+func TestNothingButOptionsIsNothingToClaim(t *testing.T) {
+	resources, rejected := sift([]string{"--note", "-ttl"})
+	if len(resources) != 0 {
+		t.Errorf("resources = %q, want none", resources)
+	}
+	if len(rejected) != 2 {
+		t.Errorf("rejected = %+v", rejected)
+	}
+}
+
+func TestAResourceWithNoArgumentsAtAll(t *testing.T) {
+	resources, rejected := sift(nil)
+	if len(resources) != 0 || len(rejected) != 0 {
+		t.Errorf("sift(nil) = %q, %+v", resources, rejected)
+	}
+}

@@ -353,9 +353,19 @@ func claim(args []string) error {
 	if fs.NArg() == 0 {
 		return errors.New("usage: agentsync claim [--ttl d] [--note s] <resource>...")
 	}
+	resources, rejected := sift(fs.Args())
+	for _, r := range rejected {
+		fmt.Fprintf(os.Stderr, "ignored  %q -- %s\n", r.arg, r.why)
+	}
+	if len(rejected) > 0 {
+		fmt.Fprintln(os.Stderr, "         options go BEFORE the resources: agentsync claim --note \"...\" <resource>")
+	}
+	if len(resources) == 0 {
+		return errors.New("nothing to claim: every argument was an option or a note")
+	}
 	s := store()
 	failed := false
-	for _, r := range fs.Args() {
+	for _, r := range resources {
 		l, err := s.Acquire(r, owner(), *note, *ttl)
 		var held *lease.Held
 		switch {
@@ -379,12 +389,59 @@ func claim(args []string) error {
 
 var errUnavailable = errors.New("at least one resource is held by another session")
 
+// A rejection is an argument that is not a resource, and why.
+type rejection struct{ arg, why string }
+
+// sift separates the resources from what only reached the list because Go's
+// flag package stops parsing at the first non-flag argument.
+//
+// "agentsync claim go-widgets/toolkit --note 'adding X'" therefore claims
+// THREE things: the repository, the literal "--note", and the sentence. 25 of
+// the 158 leases in the shared directory were like that -- 24 sentences and one
+// "--note" -- written by two sessions that each believed they had said one
+// thing.
+//
+// The repository itself does get claimed, so nothing was left unprotected. What
+// it costs is the listing every session reads before deciding where to work,
+// where a sixth of the entries were prose. So these are dropped and named
+// rather than refused: the real resource beside them is still claimed, and
+// "claim X && work" still proceeds.
+// An option written without "=" takes the NEXT argument as its value, which is
+// what the flag package would have done had it still been parsing. Dropping the
+// option without its value would leave a one-word note -- "why", "urgent" --
+// standing as a resource, indistinguishable from a repository by any test on
+// the string itself.
+func sift(args []string) (resources []string, rejected []rejection) {
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case strings.HasPrefix(a, "-"):
+			rejected = append(rejected, rejection{a, "that is an option, not a resource"})
+			if !strings.Contains(a, "=") && i+1 < len(args) {
+				i++
+				rejected = append(rejected, rejection{args[i], "that is " + a + "'s value"})
+			}
+		case strings.TrimSpace(a) == "":
+			rejected = append(rejected, rejection{a, "that is empty"})
+		case strings.ContainsAny(a, " \t"):
+			rejected = append(rejected, rejection{a, "that reads as a note, not a resource"})
+		default:
+			resources = append(resources, a)
+		}
+	}
+	return resources, rejected
+}
+
 func release(args []string) error {
 	if len(args) == 0 {
 		return errors.New("usage: agentsync release <resource>...")
 	}
+	resources, rejected := sift(args)
+	for _, r := range rejected {
+		fmt.Fprintf(os.Stderr, "ignored  %q -- %s\n", r.arg, r.why)
+	}
 	s := store()
-	for _, r := range args {
+	for _, r := range resources {
 		dropped, err := s.Release(r, owner())
 		if err != nil {
 			return err
