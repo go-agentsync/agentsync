@@ -32,6 +32,18 @@ prints their note, because "it is taken" is not actionable and "held by
 d53a55df, *packaging campaign, ~1h*" is. It exits non-zero, so
 `agentsync claim X && work` is the whole protocol.
 
+**A resource has one name, whatever you type.** `github.com/go-ansible/.github`,
+`https://github.com/go-ansible/.github.git`, `git@github.com:go-ansible/.github`
+and `go-ansible/.github` are one claim. They were four until 2026-09-06, when a
+session holding the first and a session claiming the last were both granted it
+and neither was told — the collision this tool exists for, reported by the tool
+itself as no conflict, because the strings differ.
+
+**A claim covers what is inside it.** Claiming `go-ansible` refuses
+`go-ansible/docs` to another session, and the other way round: a sweep over the
+organisation reaches the repository somebody is working in. The comparison is by
+path segment, so `go-tex` does not enclose `go-texinfo`.
+
 `mem-add` takes a lease on the index, inserts once, and **reads the file back**
 to confirm the line survived. Trusting the write would reproduce the bug.
 
