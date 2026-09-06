@@ -338,7 +338,7 @@ func TestADirectoryThatCannotBeListedIsNotReadAsAConflict(t *testing.T) {
 	}
 	// Acquire never reaches the overlap check here -- it fails earlier, on
 	// making the directory -- so the decision itself is asked directly.
-	if got := s.overlapping("go-pdfkit/ops", "alice", time.Unix(1000, 0)); got != nil {
+	if got := s.overlapping(s.path("go-pdfkit/ops"), "go-pdfkit/ops", "alice", time.Unix(1000, 0)); got != nil {
 		t.Errorf("an unlistable directory reported %+v as a holder", *got)
 	}
 }
@@ -403,5 +403,43 @@ func TestCreatingALeaseWhereThereIsNoDirectory(t *testing.T) {
 	}
 	if errors.Is(err, os.ErrExist) {
 		t.Errorf("a missing directory was reported as an existing lease: %v", err)
+	}
+}
+
+func TestALeaseWrittenUnderTheOldFileNameStillHolds(t *testing.T) {
+	// Leases written before the normalisation existed sit under a file named
+	// from what was typed. Their recorded resource still normalises to the new
+	// key, so a check that skipped "the same key, left to O_EXCL" skipped them
+	// -- and O_EXCL never saw them either, because the file name differs. The
+	// claim then went through against a live holder, which is precisely the
+	// collision all of this is for.
+	dir := t.TempDir()
+	legacy := filepath.Join(dir, "github.com_go-ansible_.github.lease")
+	body := []byte(`{"resource":"github.com/go-ansible/.github","owner":"peer",` +
+		`"note":"docs pass","acquired":"2026-09-06T00:00:00Z","expires":"2126-09-06T00:00:00Z"}`)
+	if err := os.WriteFile(legacy, body, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s := Store{Dir: dir, Now: func() time.Time { return time.Unix(1000, 0) }}
+	_, err := s.Acquire("go-ansible/.github", "me", "", time.Hour)
+	var held *Held
+	if !errors.As(err, &held) {
+		t.Fatalf("claiming what a legacy lease holds: got %v, want Held", err)
+	}
+	if held.By.Owner != "peer" || held.By.Note != "docs pass" {
+		t.Errorf("the refusal names %q (%q)", held.By.Owner, held.By.Note)
+	}
+}
+
+func TestAnExpiredLeaseUnderTheOldFileNameDoesNotBlock(t *testing.T) {
+	dir := t.TempDir()
+	body := []byte(`{"resource":"github.com/go-ansible/.github","owner":"peer",` +
+		`"acquired":"2020-01-01T00:00:00Z","expires":"2020-01-01T01:00:00Z"}`)
+	if err := os.WriteFile(filepath.Join(dir, "github.com_go-ansible_.github.lease"), body, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s := Store{Dir: dir, Now: func() time.Time { return time.Unix(1<<31, 0) }}
+	if _, err := s.Acquire("go-ansible/.github", "me", "", time.Hour); err != nil {
+		t.Errorf("a dead session's old-format lease blocked the claim: %v", err)
 	}
 }

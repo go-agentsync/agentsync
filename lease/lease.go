@@ -142,16 +142,35 @@ func covers(a, b string) bool {
 // the same repository, one having claimed the organisation around it, is the
 // collision this tool exists for.
 //
-// The exact key is left to the O_EXCL path below, which is what makes taking
-// over an expired lease and extending one's own lease work.
-func (s Store) overlapping(key, owner string, now time.Time) *Lease {
-	all, err := s.List()
+// What is skipped is the lease living at the FILE this claim is about to take,
+// and nothing else: that one is left to the O_EXCL path below, which is what
+// makes taking over an expired lease and extending one's own work.
+//
+// Skipping by KEY instead was wrong, and wrong exactly where it mattered. A
+// lease written before this normalisation existed sits under the old file name
+// while its recorded resource still normalises to the new key, so a key test
+// skipped it and the O_EXCL path never saw it either -- the claim went through
+// against a live holder. Comparing the file is what makes an old lease and a
+// new one meet.
+func (s Store) overlapping(target, key, owner string, now time.Time) *Lease {
+	entries, err := os.ReadDir(s.Dir)
 	if err != nil {
 		return nil // a directory that cannot be listed is not a conflict
 	}
-	for _, l := range all {
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".lease") {
+			continue
+		}
+		p := filepath.Join(s.Dir, e.Name())
+		if p == target {
+			continue
+		}
+		l, err := s.read(p)
+		if err != nil {
+			continue // a torn file is not a holder
+		}
 		k := Normalize(l.Resource)
-		if k == key || l.Owner == owner || l.Expired(now) {
+		if l.Owner == owner || l.Expired(now) {
 			continue
 		}
 		if covers(k, key) || covers(key, k) {
@@ -198,10 +217,10 @@ func (s Store) Acquire(resource, owner, note string, ttl time.Duration) (Lease, 
 	if err != nil {
 		return Lease{}, err
 	}
-	if held := s.overlapping(Normalize(resource), owner, now); held != nil {
+	p := s.path(resource)
+	if held := s.overlapping(p, Normalize(resource), owner, now); held != nil {
 		return Lease{}, &Held{By: *held}
 	}
-	p := s.path(resource)
 
 	for attempt := 0; attempt < 2; attempt++ {
 		err := createExclusive(p, body)
