@@ -39,6 +39,13 @@ session holding the first and a session claiming the last were both granted it
 and neither was told — the collision this tool exists for, reported by the tool
 itself as no conflict, because the strings differ.
 
+**Options go before the resources.** Go's flag package stops parsing at the
+first non-flag argument, so `agentsync claim repo --note "why"` used to claim
+three things: the repository, the literal `--note`, and the sentence. 25 of the
+158 leases in the shared directory arrived that way. They are now named and
+dropped — the repository beside them is still claimed, so `claim X && work`
+still proceeds.
+
 **A claim covers what is inside it.** Claiming `go-ansible` refuses
 `go-ansible/docs` to another session, and the other way round: a sweep over the
 organisation reaches the repository somebody is working in. The comparison is by
