@@ -285,3 +285,60 @@ func TestAResourceWithNoArgumentsAtAll(t *testing.T) {
 		t.Errorf("sift(nil) = %q, %+v", resources, rejected)
 	}
 }
+
+// A memory that was DELETED must not be repaired back into the index.
+//
+// ⛔ Repair exists so that a concurrent writer cannot make an entry unreachable.
+// It must not fight a person who removed a memory on purpose: putting the row
+// back leaves the index pointing at a file that is not there, which is the same
+// broken index the command exists to prevent, only from the other side.
+//
+// Measured 2026-09-07: a handover note was deleted once its work was done and
+// its row taken out by hand; the next mem-verify put the row straight back.
+func TestDropRowsTakesOutEveryRowLinkingToAGoneMemory(t *testing.T) {
+	const index = "# Memory index\n" +
+		"- [keep me](other.md) — unrelated\n" +
+		"- [a note](gone.md) — written for a handover\n" +
+		"- [same memory, twice](gone.md) — a duplicate row\n" +
+		"- [not this one](gonesome.md) — a longer name\n"
+
+	out, cut := dropRows(index, "gone")
+	if !cut {
+		t.Fatal("dropRows reported nothing removed")
+	}
+	if strings.Contains(out, "(gone.md)") {
+		t.Errorf("a row still links to the deleted memory:\n%s", out)
+	}
+	// Every OTHER row survives -- including one whose name merely starts the
+	// same way, which is the mistake rowLinking is careful about too.
+	for _, want := range []string{"(other.md)", "(gonesome.md)"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("dropRows removed %s as well:\n%s", want, out)
+		}
+	}
+	if _, cut := dropRows(index, "absent"); cut {
+		t.Error("dropRows claimed to remove a row for a memory nothing links to")
+	}
+}
+
+// dropRows and rowLinking must answer the same question, or a memory could be
+// reported reachable and then not cleaned, or the reverse.
+func TestDropRowsAndRowLinkingAgree(t *testing.T) {
+	const index = "# Memory index\n- [x](thing.md) — n\n- [y](thingamy.md) — n\n"
+	for _, name := range []string{"thing", "thingamy", "absent"} {
+		linked := rowLinking(index, name) != ""
+		_, cut := dropRows(index, name)
+		if linked != cut {
+			t.Errorf("%q: rowLinking says reachable=%v but dropRows says removed=%v",
+				name, linked, cut)
+		}
+	}
+}
+
+// memoryFile puts the memory beside its index, which is where mem-add wrote it.
+func TestMemoryFileSitsBesideTheIndex(t *testing.T) {
+	r := record{Name: "a-note", Index: "/tmp/memory/MEMORY.md"}
+	if got, want := memoryFile(r), "/tmp/memory/a-note.md"; got != want {
+		t.Errorf("memoryFile = %q, want %q", got, want)
+	}
+}

@@ -276,6 +276,30 @@ func rowLinking(index, name string) string {
 	return ""
 }
 
+// memoryFile is the memory a record points at: a sibling of the index, named
+// after the record.
+func memoryFile(r record) string {
+	return filepath.Join(filepath.Dir(r.Index), r.Name+".md")
+}
+
+// dropRows removes every index row linking to name's memory file, and reports
+// whether it removed any. The counterpart of rowLinking, for the case where
+// the memory is the thing that went away.
+func dropRows(index, name string) (string, bool) {
+	target := "(" + name + ".md)"
+	lines := strings.Split(index, "\n")
+	out := make([]string, 0, len(lines))
+	cut := false
+	for _, ln := range lines {
+		if strings.Contains(ln, target) {
+			cut = true
+			continue
+		}
+		out = append(out, ln)
+	}
+	return strings.Join(out, "\n"), cut
+}
+
 func memVerify(args []string) error {
 	fs := flag.NewFlagSet("mem-verify", flag.ExitOnError)
 	repair := fs.Bool("repair", true, "re-insert entries that have gone missing")
@@ -290,12 +314,14 @@ func memVerify(args []string) error {
 		fmt.Println("nothing recorded for this session")
 		return nil
 	}
-	missing, changed := 0, 0
+	missing, changed, gone := 0, 0, 0
+	goneAt := map[int]bool{}
 	for i, r := range rs {
 		b, err := os.ReadFile(r.Index)
 		if err != nil {
 			return err
 		}
+
 		if strings.Contains(string(b), r.Line) {
 			fmt.Printf("ok       %s\n", r.Name)
 			continue
@@ -307,9 +333,55 @@ func memVerify(args []string) error {
 		// a stale claim and leave two rows for one memory, which is worse than
 		// the loss it thinks it is repairing.
 		if row := rowLinking(string(b), r.Name); row != "" {
+			// ⛔ A ROW POINTING AT A FILE THAT IS NOT THERE IS NOT REACHABILITY.
+			// This is exact and cannot misfire: the row's target IS <name>.md,
+			// and <name>.md does not exist. Anything else is left alone.
+			if _, err := os.Stat(memoryFile(r)); errors.Is(err, os.ErrNotExist) {
+				if err := withIndexLease(func() error {
+					b, err := os.ReadFile(r.Index)
+					if err != nil {
+						return err
+					}
+					out, cut := dropRows(string(b), r.Name)
+					if !cut {
+						return nil
+					}
+					return os.WriteFile(r.Index, []byte(out), 0o644)
+				}); err != nil {
+					return err
+				}
+				fmt.Printf("gone     %s (dangling index row removed)\n", r.Name)
+				goneAt[i] = true
+				gone++
+				continue
+			}
 			fmt.Printf("changed  %s\n", r.Name)
 			rs[i].Line = row
 			changed++
+			continue
+		}
+
+		// ⛔⛔ UNREACHABLE IS NOT ALWAYS LOST, AND REPAIR MUST NOT FIGHT A
+		// DELETION. Putting the row back for a memory whose file was removed on
+		// purpose leaves the index pointing at nothing -- the same broken index
+		// this command exists to prevent, only from the other side.
+		//
+		// Measured 2026-09-07: a handover note was deleted once its work was
+		// done, its row taken out by hand, and the next mem-verify put the row
+		// straight back.
+		//
+		// ⚠ AND THE CHECK BELONGS HERE, NOT BEFORE THE TWO ABOVE. Tried first
+		// at the top of the loop, it declared three live entries deleted --
+		// their record name is not their file name (mem-add was called with a
+		// name of its own while the row links elsewhere), so <name>.md was
+		// absent although the memory and its row were both fine. Nothing was
+		// lost, because no row linked to those names either, but three entries
+		// silently stopped being verified. Asking only once an entry is already
+		// unreachable cannot make that mistake.
+		if _, err := os.Stat(memoryFile(r)); errors.Is(err, os.ErrNotExist) {
+			fmt.Printf("gone     %s (deleted, not put back)\n", r.Name)
+			goneAt[i] = true
+			gone++
 			continue
 		}
 		missing++
@@ -329,13 +401,32 @@ func memVerify(args []string) error {
 		}
 		fmt.Printf("REPAIRED %s\n", r.Name)
 	}
-	if changed > 0 {
+	if gone > 0 {
+		// Forget the records whose memory is gone, so a later run neither
+		// checks them nor puts their rows back.
+		keep := make([]record, 0, len(rs)-gone)
+		for i, r := range rs {
+			if !goneAt[i] {
+				keep = append(keep, r)
+			}
+		}
+		rs = keep
+	}
+	if changed > 0 || gone > 0 {
 		// Persist the rewritten text, so the next run says "ok" rather than
 		// reporting the same edit for ever.
 		if err := saveRecords(rs); err != nil {
 			return err
 		}
+	}
+	if changed > 0 {
 		fmt.Printf("\n%d index entr%s been reworded since being added, and still reach the memory.\n", changed, map[bool]string{true: "y has", false: "ies have"}[changed == 1])
+	}
+	if gone > 0 {
+		fmt.Printf("\n%d memor%s been deleted; nothing was put back for %s.\n",
+			gone, map[bool]string{true: "y has", false: "ies have"}[gone == 1],
+			map[bool]string{true: "it", false: "them"}[gone == 1])
+
 	}
 	if missing > 0 {
 		fmt.Printf("\n%d entr%s had been dropped from the index.\n", missing, map[bool]string{true: "y", false: "ies"}[missing == 1])
