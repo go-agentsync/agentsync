@@ -25,6 +25,7 @@ happened to message and ask.
     agentsync claims
     agentsync mem-add [--section "## Heading"] <memory-name> <index-line>
     agentsync mem-verify [--repair=false]
+    agentsync orphans
     agentsync whoami
 
 `claim` says out loud what you are working on. A refusal names the holder and
@@ -56,6 +57,22 @@ to confirm the line survived. Trusting the write would reproduce the bug.
 
 `mem-verify` re-reads every entry this session registered and puts back the ones
 that vanished, in the section they came from.
+
+`orphans` reports the memories that NOTHING points at. It is the half
+`mem-verify` cannot do: that one repairs what this session wrote, and a memory
+written by one session and overwritten by a third belongs to nobody. Sixty-four
+of six hundred and seventy-nine were unreachable when this was added, holding
+real work that could not be found again.
+
+⛔ It follows links TRANSITIVELY, because the fleet deliberately uses hub files
+to keep the index small enough to be read at all — a memory linked from a
+memory linked from the index is reachable. Counting only what `MEMORY.md`
+mentions reported 351 unreachable when the true number was 64, and would have
+sent somebody reorganising five times more than was broken.
+
+The remedy it suggests is a hub rather than sixty-four new index lines: the
+index is already past the size at which it is read whole, which is how those
+memories were lost in the first place.
 
 ## The discipline
 
