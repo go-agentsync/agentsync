@@ -48,19 +48,12 @@ func linksIn(path string) []string {
 	return out
 }
 
-func orphans(args []string) error {
-	if len(args) > 0 {
-		return fmt.Errorf("usage: agentsync orphans")
-	}
-	index := memoryIndex()
-	if index == "" {
-		return fmt.Errorf("agentsync: no memory index for this directory")
-	}
-	dir := filepath.Dir(index)
-
+// memoriesIn lists the memory files beside an index. MEMORY.md is the index
+// itself, not a memory.
+func memoriesIn(dir string) (map[string]bool, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
-		return fmt.Errorf("reading %s: %w", dir, err)
+		return nil, fmt.Errorf("reading %s: %w", dir, err)
 	}
 	all := map[string]bool{}
 	for _, e := range entries {
@@ -69,9 +62,20 @@ func orphans(args []string) error {
 			all[n] = true
 		}
 	}
+	return all, nil
+}
 
-	// Breadth-first from the index, following links through whatever they
-	// reach. A memory named by an unreachable memory is still unreachable.
+// reachableFrom walks the index breadth-first, following links through
+// whatever they reach. A memory named by an unreachable memory is still
+// unreachable.
+//
+// ⛔ This is the ONE definition of reachability, and every command must use
+// it. mem-verify had its own one-hop version and therefore disagreed with this
+// one about every memory a hub file holds -- it called them missing and put
+// their index rows back, which undoes the only compaction that keeps MEMORY.md
+// short enough to be read. Two answers to one question is how the index grew
+// past its read limit.
+func reachableFrom(index, dir string, all map[string]bool) map[string]bool {
 	reached := map[string]bool{}
 	frontier := linksIn(index)
 	for len(frontier) > 0 {
@@ -85,6 +89,24 @@ func orphans(args []string) error {
 		}
 		frontier = next
 	}
+	return reached
+}
+
+func orphans(args []string) error {
+	if len(args) > 0 {
+		return fmt.Errorf("usage: agentsync orphans")
+	}
+	index := memoryIndex()
+	if index == "" {
+		return fmt.Errorf("agentsync: no memory index for this directory")
+	}
+	dir := filepath.Dir(index)
+
+	all, err := memoriesIn(dir)
+	if err != nil {
+		return err
+	}
+	reached := reachableFrom(index, dir, all)
 
 	var lost []string
 	for n := range all {

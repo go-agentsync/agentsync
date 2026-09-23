@@ -300,7 +300,34 @@ func dropRows(index, name string) (string, bool) {
 	return strings.Join(out, "\n"), cut
 }
 
+// reachedVia reports whether the index still reaches a record's memory at all,
+// however many hops it takes. The walk reads every memory beside the index, so
+// it is cached per index: one session's records all name the same one, and
+// re-walking 743 files for each of them turned a check into a chore.
+//
+// ⚠ The cache is the CALLER's, not a package variable: one mem-verify run is
+// one snapshot of the index, but two runs in one process (the tests) must not
+// share an answer taken before the index was rewritten.
+func reachedVia(r record, cache map[string]map[string]bool) bool {
+	got, ok := cache[r.Index]
+	if !ok {
+		dir := filepath.Dir(r.Index)
+		all, err := memoriesIn(dir)
+		if err != nil {
+			// ⛔ A WALK THAT COULD NOT READ MUST NOT REPORT "NOT REACHED". That
+			// answer is indistinguishable from a real loss and would have every
+			// row re-inserted at once. Caching the empty result would repeat it
+			// for every record, so this deliberately does not cache.
+			return false
+		}
+		got = reachableFrom(r.Index, dir, all)
+		cache[r.Index] = got
+	}
+	return got[r.Name+".md"]
+}
+
 func memVerify(args []string) error {
+	reach := map[string]map[string]bool{}
 	fs := flag.NewFlagSet("mem-verify", flag.ExitOnError)
 	repair := fs.Bool("repair", true, "re-insert entries that have gone missing")
 	if err := fs.Parse(args); err != nil {
@@ -382,6 +409,21 @@ func memVerify(args []string) error {
 			fmt.Printf("gone     %s (deleted, not put back)\n", r.Name)
 			goneAt[i] = true
 			gone++
+			continue
+		}
+
+		// ⛔⛔ REACHABILITY IS TRANSITIVE, AND A MEMORY MOVED INTO A HUB HAS NOT
+		// GONE MISSING. The index reaches it in two hops instead of one, which
+		// is exactly what a hub file is for.
+		//
+		// Measured 2026-09-23: MEMORY.md had grown to 214 lines / 27 KB and the
+		// reader truncated the last 19, hiding real memories at startup. The
+		// only remedy is to fold rows into hub files -- and repairing on a
+		// one-hop test put every folded row straight back, so the index could
+		// never shrink. The command meant to protect the index was holding it
+		// above its own read limit.
+		if reachedVia(r, reach) {
+			fmt.Printf("hubbed   %s\n", r.Name)
 			continue
 		}
 		missing++

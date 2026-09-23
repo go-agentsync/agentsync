@@ -1,6 +1,8 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -340,5 +342,85 @@ func TestMemoryFileSitsBesideTheIndex(t *testing.T) {
 	r := record{Name: "a-note", Index: "/tmp/memory/MEMORY.md"}
 	if got, want := memoryFile(r), "/tmp/memory/a-note.md"; got != want {
 		t.Errorf("memoryFile = %q, want %q", got, want)
+	}
+}
+
+// Folding rows into a hub file is the only way MEMORY.md ever gets shorter,
+// and mem-verify used to undo it: its reachability test was one hop, so a
+// memory the index reached THROUGH a hub read as missing and its row went
+// straight back. The index could not shrink below the sum of what every
+// session had ever registered -- which is how it passed the reader's limit and
+// started truncating real memories at startup.
+func TestMemVerifyLeavesAFoldedEntryInItsHub(t *testing.T) {
+	dir := t.TempDir()
+	index := filepath.Join(dir, "MEMORY.md")
+	t.Setenv("AGENTSYNC_DIR", filepath.Join(t.TempDir(), "state"))
+	t.Setenv("AGENTSYNC_MEMORY", index)
+	t.Setenv("AGENTSYNC_OWNER", "test-session")
+
+	writeMem(t, dir, "MEMORY.md", "# Memory index\n\n## Lessons\n")
+	writeMem(t, dir, "folded.md", "a lesson worth keeping\n")
+
+	const row = "- [a lesson](folded.md): worth keeping"
+	if err := memAdd([]string{"--section", "## Lessons", "folded", row}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Compact exactly as a session does: the row goes, a hub row replaces it,
+	// and the hub names the memory.
+	writeMem(t, dir, "hub.md", "lessons: [[folded]]\n")
+	writeMem(t, dir, "MEMORY.md", "# Memory index\n\n## Lessons\n- [hub](hub.md): the lessons\n")
+
+	out := capture(t, func() {
+		if err := memVerify(nil); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if !strings.Contains(out, "hubbed   folded") {
+		t.Errorf("did not recognise the fold:\n%s", out)
+	}
+	after, err := os.ReadFile(index)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(after), row) {
+		t.Errorf("put the folded row back:\n%s", after)
+	}
+}
+
+// The control, and the reason the check above cannot simply be dropped: a
+// memory NOTHING reaches is still a loss, and must still be repaired. Without
+// this, a mem-verify that never repairs anything passes the test above.
+func TestMemVerifyStillRepairsWhatNothingReaches(t *testing.T) {
+	dir := t.TempDir()
+	index := filepath.Join(dir, "MEMORY.md")
+	t.Setenv("AGENTSYNC_DIR", filepath.Join(t.TempDir(), "state"))
+	t.Setenv("AGENTSYNC_MEMORY", index)
+	t.Setenv("AGENTSYNC_OWNER", "test-session")
+
+	writeMem(t, dir, "MEMORY.md", "# Memory index\n\n## Lessons\n")
+	writeMem(t, dir, "lonely.md", "nothing will point at this\n")
+
+	const row = "- [lonely](lonely.md): nobody links it"
+	if err := memAdd([]string{"--section", "## Lessons", "lonely", row}); err != nil {
+		t.Fatal(err)
+	}
+	// A neighbouring writer drops the row and names no hub.
+	writeMem(t, dir, "MEMORY.md", "# Memory index\n\n## Lessons\n")
+
+	out := capture(t, func() {
+		if err := memVerify(nil); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if !strings.Contains(out, "REPAIRED lonely") {
+		t.Errorf("did not repair a real loss:\n%s", out)
+	}
+	after, err := os.ReadFile(index)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(after), row) {
+		t.Errorf("row not back:\n%s", after)
 	}
 }
