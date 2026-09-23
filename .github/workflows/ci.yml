@@ -1,0 +1,31 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: build + vet + test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: gofmt
+        run: |
+          drift=$(gofmt -l .)
+          if [ -n "$drift" ]; then echo "::error::not gofmt-clean:"; echo "$drift"; exit 1; fi
+      - name: build
+        run: CGO_ENABLED=0 go build ./...
+      - name: vet
+        run: go vet ./...
+      - name: test
+        run: go test -race -timeout 10m ./...

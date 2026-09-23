@@ -33,7 +33,7 @@ import (
 	"strings"
 	"time"
 
-	"agentsync/lease"
+	"github.com/go-agentsync/agentsync/lease"
 )
 
 func home() string {
