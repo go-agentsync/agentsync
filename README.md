@@ -26,6 +26,7 @@ happened to message and ask.
     agentsync mem-add [--section "## Heading"] <memory-name> <index-line>
     agentsync mem-verify [--repair=false]
     agentsync orphans
+    agentsync mem-fold [--section H] [--hub NAME] [--dry-run]
     agentsync whoami
 
 `claim` says out loud what you are working on. A refusal names the holder and
@@ -74,6 +75,34 @@ The remedy it suggests is a hub rather than sixty-four new index lines: the
 index is already past the size at which it is read whole, which is how those
 memories were lost in the first place.
 
+`mem-fold` moves one section's rows out of the index and into a hub, which
+costs **one** index row for hundreds of memories — the index reaches them in two
+hops instead of one, and that is reachability, not loss.
+
+⛔ **The warning was never the missing piece.** The harness prints "MEMORY.md is
+34.3KB, only part of it was loaded" at the start of every session, and the index
+went 18.2 KB → 36.4 KB in the three days after the last compaction anyway. What
+was missing is that ACTING on it meant forty minutes of careful hand-editing.
+This is that forty minutes:
+
+    $ agentsync mem-fold --dry-run
+    would move 134 rows from "## Atterrissage" into defect-lessons-index.md
+    index 36417 → 12159 bytes (read limit 24400)
+
+It writes, then **re-reads both files and counts reachability**, and puts them
+back if a single memory stopped being reachable. That post-condition earned its
+place on its first run: an early `cut()` returned everything before the folded
+section and nothing after, so folding an older block deleted every newer one.
+Two memories went unreachable, the fold refused, and both files were restored —
+after I had written in the comment above it that a correct fold could not trip
+it.
+
+It refuses a hub that does not exist, because a hub says what it collects and an
+empty one would leave the rows somewhere with no explanation. It refuses a
+section of one row, which trades an index row for an index row. And the quote
+block a fold leaves behind is not a row, so running it twice is a no-op rather
+than a fold of its own pointer.
+
 ## The discipline
 
 1. **Claim before you touch a repository** that another session might be inside
@@ -82,10 +111,13 @@ memories were lost in the first place.
 2. **Set a TTL you can defend.** The default is 45 minutes. A lease that outlives
    its work blocks a resource; a lease that expires under it invites a
    collision. `claim` again to extend — re-claiming your own is not an error.
-3. **`agentsync mem-verify` before you finish.** Not after writing — at the end.
+3. **`agentsync mem-fold` when the startup warning says the index is truncated.**
+   It is one command and it is checked; leaving it undone hides a quarter of the
+   index from every session, including yours.
+4. **`agentsync mem-verify` before you finish.** Not after writing — at the end.
    The same two entries were lost three times here, and each loss happened
    minutes to hours after a successful write.
-4. **If a line keeps vanishing, look at its neighbourhood, not the file.** Three
+5. **If a line keeps vanishing, look at its neighbourhood, not the file.** Three
    of five entries survived every overwrite. Only those inside one contested
    two-line block were lost. Moving them a few lines away fixed it for good.
 

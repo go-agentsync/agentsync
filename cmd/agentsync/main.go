@@ -626,10 +626,10 @@ func main() {
 	cmds := map[string]func([]string) error{
 		"claim": claim, "release": release, "claims": claims,
 		"mem-add": memAdd, "mem-verify": memVerify, "whoami": whoami,
-		"orphans": orphans,
+		"orphans": orphans, "mem-fold": memFold,
 	}
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: agentsync {claim|release|claims|mem-add|mem-verify|orphans|whoami} ...")
+		fmt.Fprintln(os.Stderr, "usage: agentsync {claim|release|claims|mem-add|mem-verify|mem-fold|orphans|whoami} ...")
 		os.Exit(2)
 	}
 	fn, ok := cmds[os.Args[1]]
