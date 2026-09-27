@@ -341,7 +341,7 @@ func memVerify(args []string) error {
 		fmt.Println("nothing recorded for this session")
 		return nil
 	}
-	missing, changed, gone := 0, 0, 0
+	missing, changed, gone, hubbed := 0, 0, 0, 0
 	goneAt := map[int]bool{}
 	for i, r := range rs {
 		b, err := os.ReadFile(r.Index)
@@ -424,6 +424,7 @@ func memVerify(args []string) error {
 		// above its own read limit.
 		if reachedVia(r, reach) {
 			fmt.Printf("hubbed   %s\n", r.Name)
+			hubbed++
 			continue
 		}
 		missing++
@@ -472,6 +473,28 @@ func memVerify(args []string) error {
 	}
 	if missing > 0 {
 		fmt.Printf("\n%d entr%s had been dropped from the index.\n", missing, map[bool]string{true: "y", false: "ies"}[missing == 1])
+	}
+	// ⛔⛔ SAY WHAT "hubbed" MEANS, BECAUSE THE WORD ALONE READS AS A LOSS.
+	//
+	// A run whose entries have all been folded ends on a wall of "hubbed" and
+	// nothing else, and the reader supplies the meaning. On 2026-09-26 the
+	// reader was me: I took six of them for entries a concurrent session had
+	// destroyed, "repaired" them by re-inserting their rows five times over --
+	// which is precisely the re-inflation reachableFrom's comment warns about,
+	// and my index was 20.6 KB by morning because of it -- and wrote a memory
+	// telling the next session never to trust this command. Every one of those
+	// was wrong; orphans said 1039 of 1039 reachable the whole time.
+	//
+	// The verdict was right and unreadable, which costs the same as being
+	// wrong. One line is the whole fix.
+	if hubbed > 0 {
+		fmt.Printf("\n%d entr%s reached through a hub file rather than a row of its own.\n",
+			hubbed, map[bool]string{true: "y is", false: "ies are"}[hubbed == 1])
+		fmt.Println("That is the index being compacted, not a loss: nothing to do, and")
+		fmt.Println("re-adding the rows would undo the only thing that keeps it readable.")
+	}
+	if missing == 0 && gone == 0 {
+		fmt.Println("\nEvery memory this session registered is still reachable.")
 	}
 	return nil
 }

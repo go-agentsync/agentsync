@@ -424,3 +424,88 @@ func TestMemVerifyStillRepairsWhatNothingReaches(t *testing.T) {
 		t.Errorf("row not back:\n%s", after)
 	}
 }
+
+// A verdict that is right and unreadable costs the same as a wrong one.
+//
+// mem-verify ended on a wall of "hubbed" and said nothing about what it meant.
+// On 2026-09-26 a session took six of those for entries a neighbour had
+// destroyed, re-inserted their rows five times -- the re-inflation
+// reachableFrom's comment exists to prevent -- and wrote a memory telling the
+// next session never to trust this command. orphans said 1039 of 1039
+// reachable throughout.
+//
+// So: say it. And say the opposite when nothing is folded, because "no news"
+// is what the reader above filled in wrongly.
+func TestMemVerifySaysWhatHubbedMeans(t *testing.T) {
+	setup := func(t *testing.T) string {
+		t.Helper()
+		dir := t.TempDir()
+		t.Setenv("AGENTSYNC_DIR", filepath.Join(t.TempDir(), "state"))
+		t.Setenv("AGENTSYNC_MEMORY", filepath.Join(dir, "MEMORY.md"))
+		t.Setenv("AGENTSYNC_OWNER", "test-session")
+		return dir
+	}
+
+	t.Run("a folded entry is explained, not merely labelled", func(t *testing.T) {
+		dir := setup(t)
+		writeMem(t, dir, "MEMORY.md", "# Memory index\n\n## Lessons\n")
+		writeMem(t, dir, "folded.md", "a lesson worth keeping\n")
+		if err := memAdd([]string{"--section", "## Lessons", "folded", "- [a lesson](folded.md): keep"}); err != nil {
+			t.Fatal(err)
+		}
+		writeMem(t, dir, "hub.md", "lessons: [[folded]]\n")
+		writeMem(t, dir, "MEMORY.md", "# Memory index\n\n## Lessons\n- [hub](hub.md): the lessons\n")
+
+		out := capture(t, func() {
+			if err := memVerify(nil); err != nil {
+				t.Fatal(err)
+			}
+		})
+		if !strings.Contains(out, "not a loss") {
+			t.Errorf("a reader is left to guess what hubbed means:\n%s", out)
+		}
+		if !strings.Contains(out, "re-adding the rows would undo") {
+			t.Errorf("does not warn against the repair that undoes the compaction:\n%s", out)
+		}
+	})
+
+	t.Run("and an all-clear when nothing was folded", func(t *testing.T) {
+		dir := setup(t)
+		writeMem(t, dir, "MEMORY.md", "# Memory index\n\n## Lessons\n")
+		writeMem(t, dir, "kept.md", "still here\n")
+		if err := memAdd([]string{"--section", "## Lessons", "kept", "- [kept](kept.md): here"}); err != nil {
+			t.Fatal(err)
+		}
+
+		out := capture(t, func() {
+			if err := memVerify(nil); err != nil {
+				t.Fatal(err)
+			}
+		})
+		if !strings.Contains(out, "still reachable") {
+			t.Errorf("a clean run says nothing at all:\n%s", out)
+		}
+		if strings.Contains(out, "not a loss") {
+			t.Errorf("explained a fold that did not happen:\n%s", out)
+		}
+	})
+
+	t.Run("but not an all-clear when something really went", func(t *testing.T) {
+		dir := setup(t)
+		writeMem(t, dir, "MEMORY.md", "# Memory index\n\n## Lessons\n")
+		writeMem(t, dir, "lonely.md", "nothing points here\n")
+		if err := memAdd([]string{"--section", "## Lessons", "lonely", "- [lonely](lonely.md): x"}); err != nil {
+			t.Fatal(err)
+		}
+		writeMem(t, dir, "MEMORY.md", "# Memory index\n\n## Lessons\n")
+
+		out := capture(t, func() {
+			if err := memVerify([]string{"--repair=false"}); err != nil {
+				t.Fatal(err)
+			}
+		})
+		if strings.Contains(out, "still reachable") {
+			t.Errorf("said everything was reachable while reporting a loss:\n%s", out)
+		}
+	})
+}
