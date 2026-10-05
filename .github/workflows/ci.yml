@@ -19,6 +19,12 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      # ⛔ SAY WHICH TOOLCHAIN RAN. A green check that does not record the
+      # compiler behind it makes every figure measured under it unattributable:
+      # go.mod said 1.26 on a sibling repository for weeks while its CI asked
+      # for `stable` and ran 1.27, and the only way anybody noticed was reading
+      # a job log for this line.
+      - run: go version
       - name: gofmt
         run: |
           drift=$(gofmt -l .)
