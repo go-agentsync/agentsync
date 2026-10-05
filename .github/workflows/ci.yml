@@ -10,6 +10,23 @@ permissions:
   contents: read
 
 jobs:
+  # ⛔ A WORKFLOW THAT FAILS TO PARSE REPORTS NOTHING AT ALL -- no red cross, no
+  # jobs, and `gh pr checks` answers "no checks reported on the branch", which
+  # reads exactly like a check that has not started yet. It happened here on
+  # 2026-10-05: an edit landed a step inside a two-key `with:` block, orphaning
+  # the second key, and the only symptom was a run named after the FILE instead
+  # of the workflow. actionlint is the only thing that catches it, so it is the
+  # first lane.
+  actionlint:
+    name: actionlint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: actionlint
+        run: |
+          bash <(curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash)
+          ./actionlint -color
+
   test:
     name: build + vet + test
     runs-on: ubuntu-latest
