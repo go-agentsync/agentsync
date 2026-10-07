@@ -121,6 +121,33 @@ than a fold of its own pointer.
    of five entries survived every overwrite. Only those inside one contested
    two-line block were lost. Moving them a few lines away fixed it for good.
 
+## Which index it writes to
+
+**The session's, not the working directory's.**
+
+A session's project directory is fixed when it starts. Deriving the index from
+`os.Getwd` meant that `cd`ing two levels into a checkout named a *different*
+project directory — and Claude creates one per directory it has ever been started
+in, so that other directory frequently **exists**, with its own `MEMORY.md`.
+`mem-add` would then write to a real file nobody reads, and report success: the
+silent split this tool was written to prevent.
+
+Observed 2026-10-07: run from `$HOME`, it aimed at
+`~/.claude/projects/-Users-david-delavennat/memory/MEMORY.md`. That one did not
+exist, so it failed loudly. From a repository subdirectory it would have
+succeeded, into the wrong index.
+
+So the lookup follows the **transcript**, which is written at
+`<projects>/<slug>/<session id>.jsonl`: the directory holding it *is* this
+session's project directory, whatever the working directory is now. No slug
+arithmetic, no guess. Two matches are **refused** rather than ranked, because a
+session id is unique and picking one would mean writing to an index chosen by
+directory ordering.
+
+Outside a Claude session — a person at a shell — there is no transcript to
+follow, and the working directory is the best there is. `--index` overrides
+everything, and `AGENTSYNC_MEMORY` overrides the lookup.
+
 ## What it is not
 
 Advisory. Nothing enforces a lease at the filesystem level: it coordinates

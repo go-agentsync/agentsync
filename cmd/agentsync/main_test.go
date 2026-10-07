@@ -509,3 +509,101 @@ func TestMemVerifySaysWhatHubbedMeans(t *testing.T) {
 		}
 	})
 }
+
+// THE INDEX FOLLOWS THE SESSION, NOT THE WORKING DIRECTORY.
+//
+// Deriving it from os.Getwd is wrong in a way that only shows up when it
+// matters: cd two levels into a checkout and the slug names a DIFFERENT
+// project directory, which Claude has very often already created, with its
+// own MEMORY.md. mem-add then writes to a real file nobody reads and
+// reports success -- the silent split this tool exists to prevent.
+func TestTheIndexFollowsTheSessionNotTheWorkingDirectory(t *testing.T) {
+	projects := t.TempDir()
+	const id = "33aa3e72-4f98-478f-99a4-837c37d18cc5"
+	mine := filepath.Join(projects, "-Users-me-Documents-VCS-GIT-localhost")
+	other := filepath.Join(projects, "-Users-me-Documents-VCS-GIT-localhost-drift-audit-go-pkgx-site")
+	for _, d := range []string{mine, other} {
+		if err := os.MkdirAll(filepath.Join(d, "memory"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Both project directories exist, which is the whole trap: the wrong one
+	// is not missing, it is merely wrong.
+	if err := os.WriteFile(filepath.Join(mine, id+".jsonl"), []byte("{}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := sessionProjectDir(projects, id)
+	if err != nil {
+		t.Fatalf("sessionProjectDir: %v", err)
+	}
+	if got != mine {
+		t.Errorf("sessionProjectDir = %q, want %q", got, mine)
+	}
+}
+
+// NO TRANSCRIPT IS AN ERROR, not a silent fallback inside the lookup: the
+// caller decides what to do, and only the caller knows whether a working
+// directory is a reasonable second guess.
+func TestNoTranscriptIsAnError(t *testing.T) {
+	projects := t.TempDir()
+	if _, err := sessionProjectDir(projects, "33aa3e72-4f98-478f-99a4-837c37d18cc5"); err == nil {
+		t.Fatal("a session with no transcript resolved to something")
+	}
+	// AND IT SAYS WHICH FAILURE IT IS. Without the empty-id branch the glob
+	// still matches nothing, so the behaviour is identical and only the
+	// MESSAGE differs -- mutate proved exactly that, surviving the removal
+	// until this assertion was added. The message is the whole value here:
+	// "no session id in the environment" sends the reader to the
+	// environment, while "no transcript for session " sends them hunting
+	// for a file that was never named.
+	_, err := sessionProjectDir(projects, "")
+	if err == nil {
+		t.Fatal("an empty session id resolved to something")
+	}
+	if !strings.Contains(err.Error(), "no session id") {
+		t.Errorf("an empty id is reported as %v, which does not name the cause", err)
+	}
+}
+
+// AMBIGUITY IS REFUSED, not resolved. A session id is unique, so two
+// matches mean the assumption behind the lookup is false, and picking one
+// would write to an index chosen by directory ordering.
+func TestTwoTranscriptsAreRefusedRatherThanRanked(t *testing.T) {
+	projects := t.TempDir()
+	const id = "33aa3e72-4f98-478f-99a4-837c37d18cc5"
+	for _, name := range []string{"-a", "-b"} {
+		d := filepath.Join(projects, name)
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(d, id+".jsonl"), []byte("{}\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_, err := sessionProjectDir(projects, id)
+	if err == nil {
+		t.Fatal("two transcripts were silently ranked")
+	}
+	if !strings.Contains(err.Error(), "refusing to guess") {
+		t.Errorf("the refusal does not say why: %v", err)
+	}
+}
+
+// A SESSION ID IS A UUID. Anything containing glob metacharacters would
+// reach project directories it was never given, so it is refused before it
+// is pasted into a pattern.
+func TestASessionIdCannotBeAGlob(t *testing.T) {
+	projects := t.TempDir()
+	d := filepath.Join(projects, "-somewhere-else")
+	if err := os.MkdirAll(d, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(d, "anything.jsonl"), []byte("{}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"*", "../*/anything", `a?c`, "a[bc]d"} {
+		if _, err := sessionProjectDir(projects, id); err == nil {
+			t.Errorf("%q was accepted as a session id", id)
+		}
+	}
+}
