@@ -67,17 +67,72 @@ func owner() string {
 	return "unidentified-" + h
 }
 
-// memoryIndex locates MEMORY.md the way Claude does: the project directory's
-// path with the separators flattened.
+// memoryIndex locates the MEMORY.md of the session running this command.
+//
+// # IT FOLLOWS THE SESSION, NOT THE WORKING DIRECTORY
+//
+// Deriving the path from os.Getwd was wrong in a way that only shows up
+// when it matters. A session's project directory is fixed when it starts;
+// cd into a checkout two levels down and the derived slug names a
+// DIFFERENT project directory -- and Claude creates one per directory it
+// has been started in, so that other directory frequently EXISTS, with its
+// own MEMORY.md. mem-add then writes to a real file that nobody reads, and
+// reports success, which is the exact silent split this tool was written to
+// prevent.
+//
+// Observed 2026-10-07: `agentsync mem-add` run from $HOME aimed at
+// ~/.claude/projects/-Users-david-delavennat/memory/MEMORY.md. That one did
+// not exist, so it failed loudly. From a repository subdirectory it would
+// have succeeded, into the wrong index.
+//
+// The session's transcript is the authority: it is written at
+// <projects>/<slug>/<session id>.jsonl, so the directory HOLDING IT is this
+// session's project directory, whatever the working directory is now. No
+// slug arithmetic, no guess.
 func memoryIndex() string {
 	if v := os.Getenv("AGENTSYNC_MEMORY"); v != "" {
 		return v
 	}
+	projects := filepath.Join(home(), ".claude", "projects")
+	if dir, err := sessionProjectDir(projects, os.Getenv("CLAUDE_CODE_SESSION_ID")); err == nil {
+		return filepath.Join(dir, "memory", "MEMORY.md")
+	}
+	// Outside a Claude session -- a person at a shell, a test -- there is no
+	// transcript to follow and the working directory is the best there is.
 	dir, err := os.Getwd()
 	if err != nil {
 		return ""
 	}
-	return filepath.Join(home(), ".claude", "projects", projectSlug(dir), "memory", "MEMORY.md")
+	return filepath.Join(projects, projectSlug(dir), "memory", "MEMORY.md")
+}
+
+// sessionProjectDir finds the project directory holding this session's
+// transcript.
+//
+// Ambiguity is REFUSED rather than resolved: a session id is unique, so two
+// matches mean the assumption behind this whole lookup is false, and
+// picking one would write to an index chosen by directory ordering.
+func sessionProjectDir(projects, sessionID string) (string, error) {
+	if sessionID == "" {
+		return "", errors.New("no session id in the environment")
+	}
+	if strings.ContainsAny(sessionID, `/\*?[`) {
+		// A session id is a UUID. Anything else would be a glob pattern
+		// reaching wherever it liked.
+		return "", fmt.Errorf("%q is not a session id", sessionID)
+	}
+	matches, err := filepath.Glob(filepath.Join(projects, "*", sessionID+".jsonl"))
+	if err != nil {
+		return "", err
+	}
+	switch len(matches) {
+	case 0:
+		return "", fmt.Errorf("no transcript for session %s under %s", short(sessionID), projects)
+	case 1:
+		return filepath.Dir(matches[0]), nil
+	default:
+		return "", fmt.Errorf("session %s has %d transcripts; refusing to guess", short(sessionID), len(matches))
+	}
 }
 
 // projectSlug is how Claude names a project's directory: the absolute path with
