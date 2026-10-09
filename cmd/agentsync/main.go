@@ -666,7 +666,19 @@ func release(args []string) error {
 	return nil
 }
 
-func claims([]string) error {
+// claims answers one question — what is taken RIGHT NOW — and for a long time it
+// answered it badly: of 546 leases on this machine, 527 were expired and 19 were live,
+// so a session scanning the list to avoid a collision had to read 97% noise to find the
+// 3% that could stop it. Expired leases are history; they are shown on request.
+//
+// ⛔ Hiding is announced, never silent. A tool that drops rows without saying so lies by
+// omission, and the next reader counts what is printed.
+func claims(args []string) error {
+	fs := flag.NewFlagSet("claims", flag.ExitOnError)
+	all := fs.Bool("all", false, "show expired leases too — they are history, not holds")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
 	ls, err := store().List()
 	if err != nil {
 		return err
@@ -678,7 +690,8 @@ func claims([]string) error {
 	sort.Slice(ls, func(i, j int) bool { return ls[i].Resource < ls[j].Resource })
 	now := time.Now()
 	me := owner()
-	for _, l := range ls {
+	shown, hidden := visible(ls, now, *all)
+	for _, l := range shown {
 		state := "held"
 		if l.Expired(now) {
 			state = "EXPIRED"
@@ -692,7 +705,28 @@ func claims([]string) error {
 			fmt.Printf("         %q\n", l.Note)
 		}
 	}
+	if hidden > 0 {
+		fmt.Printf("\n%d expired lease(s) not shown; --all to see them.\n", hidden)
+	}
+	if len(shown) == 0 {
+		fmt.Println("nothing is held right now.")
+	}
 	return nil
+}
+
+// visible is the decision claims makes, kept separate from the printing so it can be
+// tested without a store or a captured stdout: which leases to show, and how many were
+// left out. Nothing is ever dropped without being counted — the caller announces the
+// number, because a listing that quietly omits rows is read as a listing of everything.
+func visible(ls []lease.Lease, now time.Time, all bool) (shown []lease.Lease, hidden int) {
+	for _, l := range ls {
+		if l.Expired(now) && !all {
+			hidden++
+			continue
+		}
+		shown = append(shown, l)
+	}
+	return shown, hidden
 }
 
 func whoami([]string) error {

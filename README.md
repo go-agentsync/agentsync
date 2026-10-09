@@ -22,12 +22,18 @@ happened to message and ask.
 
     agentsync claim [--ttl 45m] [--note "..."] <resource>...
     agentsync release <resource>...
-    agentsync claims
+    agentsync claims [--all]
     agentsync mem-add [--section "## Heading"] <memory-name> <index-line>
     agentsync mem-verify [--repair=false]
     agentsync orphans
     agentsync mem-fold [--section H] [--hub NAME] [--dry-run]
     agentsync whoami
+
+`claims` answers one question — what is taken **right now** — so it shows the
+leases that are held and says how many expired ones it left out. On this machine
+that was 19 live against 527 expired: a session scanning the list to avoid a
+collision read 97% history to find the 3% that could stop it. `--all` brings the
+history back, and nothing is ever dropped without being counted.
 
 `claim` says out loud what you are working on. A refusal names the holder and
 prints their note, because "it is taken" is not actionable and "held by
