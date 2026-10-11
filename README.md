@@ -23,11 +23,46 @@ happened to message and ask.
     agentsync claim [--ttl 45m] [--note "..."] <resource>...
     agentsync release <resource>...
     agentsync claims [--all]
+    agentsync tell <resource> <what the holder needs to know>
+    agentsync messages [--max-age 24h] <resource>
+    agentsync forget <resource>
     agentsync mem-add [--section "## Heading"] <memory-name> <index-line>
     agentsync mem-verify [--repair=false]
     agentsync orphans
     agentsync mem-fold [--section H] [--hub NAME] [--dry-run]
     agentsync whoami
+
+`tell` is the answer to a refusal, which until 2026-10-11 was a dead end. A
+refusal names the holder and prints their note — which tells the refused session
+where not to work and gives it nowhere to reply. That day a session was refused
+`go-crdt/collab` by a holder whose note said it was about to measure and fix four
+reachable `x/net` advisories; that work had landed two days earlier and was
+tagged `v0.77.0`. The refused session knew, and could not say so.
+
+So a message is not chat: it is the one channel a lock protocol is missing, from
+whoever was turned away back to whoever is holding. `claim` prints what is
+waiting on **both** outcomes, and `release` prints it too, that being the last
+moment a session will ever look at the resource.
+
+Four properties, each the answer to something that has already gone wrong here:
+
+- **One appended write per message, never read-modify-write.** That is what
+  dropped index lines out of a shared `MEMORY.md` when several sessions edited
+  it at once, and this file has the same several writers. Twenty concurrent
+  `tell`s all arrive.
+- **One spelling.** The message file is the lease's own path with another
+  suffix, so `o/r`, `https://github.com/o/r` and `git@github.com:o/r` reach one
+  conversation rather than three.
+- **Stale is dropped and counted.** Older than `--max-age` (a day by default,
+  where leases last 45 minutes) is noise about work that has moved — but
+  discarding it silently would make a channel that loses things, which is the
+  one property a channel must not have.
+- **`tell` says who will read it.** A message on an unheld resource still waits
+  for the next claimer, and "told nobody" must not read like "told someone".
+
+Reading does not consume them: `forget` is separate, because if reading cleared
+them two holders in a row would see different halves of one conversation, and a
+session that read them and then died would have consumed them for everybody.
 
 `claims` answers one question — what is taken **right now** — so it shows the
 leases that are held and says how many expired ones it left out. On this machine
