@@ -591,11 +591,52 @@ func claim(args []string) error {
 		default:
 			fmt.Printf("claimed  %s until %s\n", r, l.Expires.Format("15:04:05"))
 		}
+		// Printed on BOTH outcomes. The holder needs them because that is who
+		// they were left for; the refused session needs them because what it
+		// was about to say may already be there, and because a note left for
+		// the previous holder is usually still true.
+		showMessages(s, r)
 	}
 	if failed {
 		return errUnavailable
 	}
 	return nil
+}
+
+// messageWindow is how far back a reader is shown.
+//
+// A day, because the leases these accompany last 45 minutes and the sessions
+// holding them run for days: anything older than a day is about work that has
+// since moved, and showing it teaches the reader to skim the ones that matter.
+// What is older is COUNTED rather than hidden -- see Store.Messages.
+const messageWindow = 24 * time.Hour
+
+// showMessages prints what has been left about a resource, and says so when it
+// is hiding something.
+func showMessages(s lease.Store, resource string) {
+	live, dropped, err := s.Messages(resource, messageWindow)
+	if err != nil {
+		// Not fatal: a claim that succeeded has succeeded, and saying nothing
+		// about an unreadable inbox is the only outcome worse than saying this.
+		fmt.Fprintf(os.Stderr, "         (its messages could not be read: %v)\n", err)
+		return
+	}
+	for _, m := range live {
+		fmt.Printf("         ← %s, %s: %s\n", short(m.From), m.At.Format("15:04:05"), oneLine(m.Text))
+	}
+	if dropped > 0 {
+		fmt.Printf("         (%d older or unreadable message(s) not shown; agentsync messages %s --max-age 0 for all)\n",
+			dropped, resource)
+	}
+	if len(live) > 0 {
+		fmt.Printf("         (agentsync forget %s once you have acted on them)\n", resource)
+	}
+}
+
+// oneLine keeps a multi-line message from breaking the column this prints in,
+// without throwing any of it away.
+func oneLine(s string) string {
+	return strings.Join(strings.Fields(s), " ")
 }
 
 var errUnavailable = errors.New("at least one resource is held by another session")
@@ -662,6 +703,12 @@ func release(args []string) error {
 			continue
 		}
 		fmt.Printf("released %s\n", r)
+		// The last moment this session will look at this resource, and
+		// therefore the last chance it has to read what somebody left for it.
+		// A message that arrives while the work is already done is still worth
+		// seeing: it is usually "that is already fixed", and the next session
+		// inherits it either way.
+		showMessages(s, r)
 	}
 	return nil
 }
@@ -739,9 +786,10 @@ func main() {
 		"claim": claim, "release": release, "claims": claims,
 		"mem-add": memAdd, "mem-verify": memVerify, "whoami": whoami,
 		"orphans": orphans, "mem-fold": memFold,
+		"tell": tell, "messages": messages, "forget": forget,
 	}
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: agentsync {claim|release|claims|mem-add|mem-verify|mem-fold|orphans|whoami} ...")
+		fmt.Fprintln(os.Stderr, "usage: agentsync {claim|release|claims|tell|messages|forget|mem-add|mem-verify|mem-fold|orphans|whoami} ...")
 		os.Exit(2)
 	}
 	fn, ok := cmds[os.Args[1]]
