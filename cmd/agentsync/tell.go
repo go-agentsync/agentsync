@@ -55,6 +55,49 @@ func tell(args []string) error {
 	return nil
 }
 
+// parseAnywhere parses flags that appear BEFORE, AFTER or BETWEEN the
+// positional arguments, and returns the positional ones in order.
+//
+// ⛔ Go's flag package stops at the first non-flag argument, so
+// `messages o/r --max-age 0` leaves `--max-age` and `0` as positional
+// arguments and the command answers "usage:". That is not a theory: this
+// program PRINTS that exact command. A lease refusal ends with
+//
+//	(3 older message(s) not shown; agentsync messages o/r --max-age 0 for all)
+//
+// and running it as printed fails. An instruction a tool gives has to be one
+// the tool accepts, and the cheaper of the two repairs -- reordering the hint
+// -- would leave every person who types the flag last in the same place.
+//
+// The loop is the idiom from the flag package's own documentation: parse, take
+// the positional argument that stopped it, and parse the rest. Parse keeps the
+// pairing of a flag with its value, which a partition by "starts with -" would
+// get wrong for exactly the `--max-age 0` that started this.
+//
+// ⛔ IT IS WRONG FOR `tell` AND `mem-add`, and they do not use it. Their last
+// argument is free text, and continuing to parse after a positional argument
+// makes any text beginning with a dash a flag error:
+//
+//	agentsync mem-add thing "- [thing](thing.md): what it is"
+//
+// is the normal shape of an index line, and `- [thing]…` would be read as a
+// flag named " [thing]…". Stopping at the first positional argument is
+// exactly right there. The difference is not style: it is whether an argument
+// can look like a flag, and only the command knows.
+func parseAnywhere(fs *flag.FlagSet, args []string) ([]string, error) {
+	var pos []string
+	for {
+		if err := fs.Parse(args); err != nil {
+			return nil, err
+		}
+		if fs.NArg() == 0 {
+			return pos, nil
+		}
+		pos = append(pos, fs.Arg(0))
+		args = fs.Args()[1:]
+	}
+}
+
 // messages prints what has been left about a resource, without claiming it.
 //
 // Separate from claim because the question "is anything waiting on X" should not
@@ -63,13 +106,14 @@ func tell(args []string) error {
 func messages(args []string) error {
 	fs := flag.NewFlagSet("messages", flag.ExitOnError)
 	maxAge := fs.Duration("max-age", messageWindow, "hide messages older than this; 0 shows everything")
-	if err := fs.Parse(args); err != nil {
+	rest, err := parseAnywhere(fs, args)
+	if err != nil {
 		return err
 	}
-	if fs.NArg() != 1 {
+	if len(rest) != 1 {
 		return errors.New("usage: agentsync messages [--max-age d] <resource>")
 	}
-	resource := fs.Arg(0)
+	resource := rest[0]
 
 	live, dropped, err := store().Messages(resource, *maxAge)
 	if err != nil {

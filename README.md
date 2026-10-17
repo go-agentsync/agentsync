@@ -59,6 +59,16 @@ Four properties, each the answer to something that has already gone wrong here:
   one property a channel must not have.
 - **`tell` says who will read it.** A message on an unheld resource still waits
   for the next claimer, and "told nobody" must not read like "told someone".
+- **The flag works where your hand puts it.** `claim` and `messages` take their
+  options before, after or between the resources, because this program *prints*
+  `agentsync messages o/r --max-age 0 for all` and that command used to answer
+  `usage:` — Go's flag package stops at the first non-flag argument, so
+  `--max-age` and `0` were being read as resources. An instruction a tool gives
+  has to be one the tool accepts. ⛔ `tell` and `mem-add` deliberately still
+  stop at their first positional argument: their last argument is free text,
+  and `mem-add thing "- [thing](thing.md): …"` would otherwise fail on a line
+  that begins with a dash. The rule is not style — it is whether an argument
+  can look like a flag, and only the command knows.
 
 Reading does not consume them: `forget` is separate, because if reading cleared
 them two holders in a row would see different halves of one conversation, and a
