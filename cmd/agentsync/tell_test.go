@@ -1,6 +1,8 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -102,6 +104,74 @@ func TestMessagesAnswersWithoutClaiming(t *testing.T) {
 	out = said(t, func() error { return messages([]string{"other/thing"}) })
 	if !strings.Contains(out, "nothing has been said") {
 		t.Errorf("an empty inbox gave %q", out)
+	}
+}
+
+// ⛔ A hint this program prints has to be a command this program accepts.
+//
+// A lease refusal ends with `agentsync messages o/r --max-age 0 for all`, and
+// run as printed it answered "usage:": Go's flag package stops at the first
+// non-flag argument, so `--max-age` and `0` were positional arguments. The
+// test spells the invocation the way the hint does rather than the way the
+// parser liked, which is the only version that would have failed before.
+func TestTheFlagWorksWhereTheHintPutsIt(t *testing.T) {
+	sandbox(t, "asker-7777")
+	if err := tell([]string{"o/r", "something waiting"}); err != nil {
+		t.Fatal(err)
+	}
+
+	// The control first: before the resource, which always worked.
+	out := said(t, func() error { return messages([]string{"--max-age", "0", "o/r"}) })
+	if !strings.Contains(out, "something waiting") {
+		t.Fatalf("the flag before the resource did not work either, so this test says nothing about order:\n%s", out)
+	}
+	// And after it, which is where the hint and every habit put it.
+	out = said(t, func() error { return messages([]string{"o/r", "--max-age", "0"}) })
+	if !strings.Contains(out, "something waiting") {
+		t.Errorf("the flag after the resource was read as a resource:\n%s", out)
+	}
+	// Two resources is still a usage error: accepting flags anywhere must not
+	// turn a mistake into a silent choice of the first one.
+	if err := messages([]string{"o/r", "other/thing"}); err == nil {
+		t.Error("two resources were accepted")
+	}
+}
+
+// ⛔ And the OTHER half of that rule: `mem-add` and `tell` must keep stopping
+// at the first positional argument, because their last argument is free text
+// that routinely begins with a dash.
+//
+//	agentsync mem-add thing "- [thing](thing.md): what it is"
+//
+// is the normal shape of an index line. Parsing on past the name would read
+// `- [thing]…` as a flag and refuse the command. This pins both, so that
+// "accept flags anywhere" cannot be applied here as a tidy-up.
+func TestFreeTextArgumentsMayBeginWithADash(t *testing.T) {
+	sandbox(t, "writer-8888")
+
+	line := "- [thing](thing.md): what it is"
+	idx := filepath.Join(t.TempDir(), "MEMORY.md")
+	if err := os.WriteFile(idx, []byte("# Memory index\n\n## Landing\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := memAdd([]string{"--index", idx, "thing", line}); err != nil {
+		t.Fatalf("an index line beginning with a dash was refused: %v", err)
+	}
+	b, err := os.ReadFile(idx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), line) {
+		t.Errorf("the line did not land:\n%s", b)
+	}
+
+	// Same for a message whose text begins with a dash.
+	if err := tell([]string{"o/r", "-- careful, this one is mine"}); err != nil {
+		t.Fatalf("a message beginning with a dash was refused: %v", err)
+	}
+	out := said(t, func() error { return messages([]string{"o/r"}) })
+	if !strings.Contains(out, "careful") {
+		t.Errorf("the message did not land:\n%s", out)
 	}
 }
 

@@ -558,18 +558,19 @@ func claim(args []string) error {
 	fs := flag.NewFlagSet("claim", flag.ExitOnError)
 	ttl := fs.Duration("ttl", 45*time.Minute, "how long before anyone may take it")
 	note := fs.String("note", "", "what you are doing, for the next session to read")
-	if err := fs.Parse(args); err != nil {
+	// Flags anywhere, because `claim o/r --note "..."` is what a hand reaches
+	// for and a resource name cannot look like a flag. parseAnywhere says why
+	// tell and mem-add must NOT do the same.
+	rest, err := parseAnywhere(fs, args)
+	if err != nil {
 		return err
 	}
-	if fs.NArg() == 0 {
+	if len(rest) == 0 {
 		return errors.New("usage: agentsync claim [--ttl d] [--note s] <resource>...")
 	}
-	resources, rejected := sift(fs.Args())
+	resources, rejected := sift(rest)
 	for _, r := range rejected {
 		fmt.Fprintf(os.Stderr, "ignored  %q -- %s\n", r.arg, r.why)
-	}
-	if len(rejected) > 0 {
-		fmt.Fprintln(os.Stderr, "         options go BEFORE the resources: agentsync claim --note \"...\" <resource>")
 	}
 	if len(resources) == 0 {
 		return errors.New("nothing to claim: every argument was an option or a note")
