@@ -53,6 +53,35 @@ jobs:
       - name: test
         run: go test -race -timeout 10m ./...
 
+      # ⛔ THE PLATFORM THIS PROGRAM ACTUALLY RUNS ON WAS NEVER COMPILED.
+      # Every lane in this file is ubuntu, and the sessions this program
+      # coordinates run on a Mac. buildscan said so without reporting a
+      # finding: it listed two configurations, both linux/amd64, and no file
+      # here is behind a platform constraint -- so there is nothing for it to
+      # call uncompiled, and the gap is in the LIST rather than in the
+      # findings.
+      #
+      # `go vet` cross-compiles, so this costs seconds and no second runner.
+      # Written out rather than looped, because a configuration hidden in a
+      # shell loop is invisible to every instrument that reads workflows.
+      # ⛔ And the ARCHITECTURE as well, because `GOOS=darwin` on an ubuntu
+      # runner compiles darwin/AMD64 — which buildscan printed, and which is
+      # not what this machine is. Covering darwin and covering arm64 is not
+      # covering darwin/arm64; that conjunction is how a file in
+      # go-compressions/blake3 came to be compiled by no lane at all.
+      #
+      # ⛔ ONE STEP PER CONFIGURATION, and not because it reads better: an
+      # instrument that reads workflows attributes one configuration to one
+      # step, so two invocations in a single `run:` block show up as one.
+      # Written as two steps, buildscan lists both — which is the same reason
+      # the loop was unrolled above, met a second time one line down.
+      - name: vet for darwin on arm64
+        run: GOOS=darwin GOARCH=arm64 go vet ./...
+      - name: vet for darwin on amd64
+        run: GOOS=darwin GOARCH=amd64 go vet ./...
+      - name: vet for windows
+        run: GOOS=windows go vet ./...
+
       # ⛔ NOTHING HERE ASKED ABOUT VULNERABILITIES. This module has no
       # dependencies, which is exactly why it went unasked -- and the standard
       # library is a dependency. Scanned by hand on 2026-10-17 it reported
