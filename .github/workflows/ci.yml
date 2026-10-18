@@ -70,11 +70,19 @@ jobs:
       # covering darwin/arm64; that conjunction is how a file in
       # go-compressions/blake3 came to be compiled by no lane at all.
       #
-      # ⛔ ONE STEP PER CONFIGURATION, and not because it reads better: an
-      # instrument that reads workflows attributes one configuration to one
-      # step, so two invocations in a single `run:` block show up as one.
-      # Written as two steps, buildscan lists both — which is the same reason
-      # the loop was unrolled above, met a second time one line down.
+      # One step per configuration, because a named step reports its own
+      # status: a red "vet for darwin on arm64" says which platform without
+      # anybody opening the log.
+      #
+      # ⛔ This comment used to give a different reason — that an instrument
+      # reading workflows attributes one configuration per STEP, so two
+      # invocations in one `run:` block showed up as one. That was true of
+      # buildscan when this lane was written and is no longer: it reads per
+      # COMMAND since fleettools v0.20.0, and the fix also taught it that a
+      # `cd` on its own line and a `(cd x && …)` subshell are where a command
+      # compiles. A workflow shaped around a tool's limitation should say so,
+      # and should stop saying so when the tool is fixed — otherwise the next
+      # reader inherits a constraint that no longer exists.
       - name: vet for darwin on arm64
         run: GOOS=darwin GOARCH=arm64 go vet ./...
       - name: vet for darwin on amd64
