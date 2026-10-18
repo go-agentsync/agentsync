@@ -111,7 +111,16 @@ jobs:
         run: |
           set -eu
           go install golang.org/x/vuln/cmd/govulncheck@latest
-          go install github.com/go-fleettools/fleettools/cmd/vulngate@v0.18.1
+          # ⛔ The pin is bumped for the NOTE, not for the judgment. Measured
+          # 2026-10-18: cmd/vulngate and internal/fleet are byte-identical
+          # between v0.18.1 and v0.20.1 -- built with -buildvcs=false the two
+          # binaries have the same sha256 -- so the four intervening commits
+          # cannot change what this step reports. What v0.18.1 DOES do is print
+          # "STALE -- v0.18.1 is 4 commit(s) behind ... Those commits may change
+          # what this pass reports" on every run, which is true about the count
+          # and false about the consequence. A warning that cannot matter is the
+          # one that teaches people to read past the warnings that can.
+          go install github.com/go-fleettools/fleettools/cmd/vulngate@v0.20.1
           BIN="$(go env GOPATH)/bin"
           "$BIN/govulncheck" -format json ./... > /tmp/vuln.json || true
           test -s /tmp/vuln.json || { echo "::error::govulncheck wrote nothing at all"; exit 1; }
