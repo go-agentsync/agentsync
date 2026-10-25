@@ -20,7 +20,7 @@ happened to message and ask.
 
 ## What it does
 
-    agentsync claim [--ttl 45m] [--note "..."] <resource>...
+    agentsync claim [--ttl 45m] [--note "..."] [--wait 30m [--every 15s]] <resource>...
     agentsync release <resource>...
     agentsync claims [--all]
     agentsync tell <resource> <what the holder needs to know>
@@ -84,6 +84,28 @@ history back, and nothing is ever dropped without being counted.
 prints their note, because "it is taken" is not actionable and "held by
 d53a55df, *packaging campaign, ~1h*" is. It exits non-zero, so
 `agentsync claim X && work` is the whole protocol.
+
+**`--wait` is for the resource somebody is five minutes from finishing with.**
+Without it the protocol has no patience: a refusal is final, and the session has
+to come back and ask by hand. The gap between *their lease lapsed* and *somebody
+noticed* is where two sessions pick up the same item — or where the waiting one
+decides to act anyway, which is the collision this tool exists to prevent.
+
+    agentsync claim --wait 30m --note "tag v0.8.2 once their work lands" go-embedded-ruby/ruby
+
+It says who holds it and why **once**, not on every retry, and then one line
+when it gets in. If the deadline passes it returns the holder's refusal
+unchanged, so a session that waited and still did not get in reads exactly what
+it would have read at once.
+
+It takes **one** resource. Waiting for several would acquire them as they free
+and block on the rest, leaving the session holding part of what it asked for
+while still unable to start — the half-held state `claim X && work` exists to
+prevent. `--every 0` is refused too: that is a busy loop, not a wait.
+
+⛔ It waits for a lease to **lapse**, not for the holder to finish. A holder who
+renews keeps it, and a holder who dies releases it at the TTL rather than never
+— which is why leases expire at all.
 
 **A resource has one name, whatever you type.** `github.com/go-ansible/.github`,
 `https://github.com/go-ansible/.github.git`, `git@github.com:go-ansible/.github`

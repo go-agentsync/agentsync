@@ -26,6 +26,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/user"
 	"path/filepath"
@@ -554,10 +555,67 @@ func memVerify(args []string) error {
 	return nil
 }
 
+// waitAcquire keeps asking for a lease until it is ours or the deadline passes.
+//
+// Why it exists: `agentsync claim X && work` is the whole protocol, and it has
+// no patience. A session that wants a resource another is five minutes from
+// finishing with has to come back and ask by hand -- and the gap between "their
+// lease lapsed" and "somebody noticed" is where two sessions pick up the same
+// item, or where the waiting one decides to act anyway. Measured on 2026-10-25:
+// a session waited out a 32-bit-targets lease in 11 attempts and then found the
+// holder had already done the release it was waiting to make, which is the good
+// outcome and needed no hand-holding.
+//
+// ⛔ now and sleep are injected for the same reason Store.Now is: a test for
+// the waiting must not wait. With a fake clock whose sleep advances it, every
+// branch here is reachable in microseconds.
+//
+// It returns the last *lease.Held when the deadline passes, so the caller
+// prints the same REFUSED block it prints without --wait. A session that waited
+// and still did not get it is in exactly the state it would have been in
+// immediately, and should read the same.
+func waitAcquire(s lease.Store, resource, owner, note string, ttl, wait, every time.Duration,
+	now func() time.Time, sleep func(time.Duration), out io.Writer) (lease.Lease, error) {
+	stop := now().Add(wait)
+	announced := false
+	for attempts := 1; ; attempts++ {
+		l, err := s.Acquire(resource, owner, note, ttl)
+		if err == nil {
+			if announced {
+				fmt.Fprintf(out, "         got it on attempt %d\n", attempts)
+			}
+			return l, nil
+		}
+		var held *lease.Held
+		if !errors.As(err, &held) {
+			// Not "somebody holds it" but "the store would not answer". Waiting
+			// on that would spend the whole deadline reporting nothing.
+			return lease.Lease{}, err
+		}
+		if !announced {
+			// Said ONCE. Repeating the holder and their note on every retry
+			// teaches the reader to skim the line that matters.
+			fmt.Fprintf(out, "WAITING  %s\n         held by %s until %s\n",
+				resource, short(held.By.Owner), held.By.Expires.Format("15:04:05"))
+			if held.By.Note != "" {
+				fmt.Fprintf(out, "         %q\n", held.By.Note)
+			}
+			fmt.Fprintf(out, "         retrying every %s until %s\n", every, stop.Format("15:04:05"))
+			announced = true
+		}
+		if now().Add(every).After(stop) {
+			return lease.Lease{}, err
+		}
+		sleep(every)
+	}
+}
+
 func claim(args []string) error {
 	fs := flag.NewFlagSet("claim", flag.ExitOnError)
 	ttl := fs.Duration("ttl", 45*time.Minute, "how long before anyone may take it")
 	note := fs.String("note", "", "what you are doing, for the next session to read")
+	wait := fs.Duration("wait", 0, "keep asking until the holder's lease lapses, up to this long")
+	every := fs.Duration("every", 15*time.Second, "how often to ask again while --wait is set")
 	// Flags anywhere, because `claim o/r --note "..."` is what a hand reaches
 	// for and a resource name cannot look like a flag. parseAnywhere says why
 	// tell and mem-add must NOT do the same.
@@ -566,7 +624,7 @@ func claim(args []string) error {
 		return err
 	}
 	if len(rest) == 0 {
-		return errors.New("usage: agentsync claim [--ttl d] [--note s] <resource>...")
+		return errors.New("usage: agentsync claim [--ttl d] [--note s] [--wait d [--every d]] <resource>...")
 	}
 	resources, rejected := sift(rest)
 	for _, r := range rejected {
@@ -575,10 +633,28 @@ func claim(args []string) error {
 	if len(resources) == 0 {
 		return errors.New("nothing to claim: every argument was an option or a note")
 	}
+	// ⛔ --wait takes ONE resource. Waiting for several would acquire them as
+	// they free and block on the rest, leaving the session holding some of what
+	// it asked for while still unable to start -- which is the half-held state
+	// `claim X && work` exists to prevent. A refusal is better than semantics
+	// nobody chose.
+	if *wait > 0 && len(resources) != 1 {
+		return fmt.Errorf("--wait takes exactly one resource, got %d: waiting for several would leave you "+
+			"holding the ones that freed while still blocked on the rest", len(resources))
+	}
+	if *every <= 0 {
+		return errors.New("--every must be positive: a zero interval is a busy loop, not a wait")
+	}
 	s := store()
 	failed := false
 	for _, r := range resources {
-		l, err := s.Acquire(r, owner(), *note, *ttl)
+		var l lease.Lease
+		var err error
+		if *wait > 0 {
+			l, err = waitAcquire(s, r, owner(), *note, *ttl, *wait, *every, time.Now, time.Sleep, os.Stdout)
+		} else {
+			l, err = s.Acquire(r, owner(), *note, *ttl)
+		}
 		var held *lease.Held
 		switch {
 		case errors.As(err, &held):
