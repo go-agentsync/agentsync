@@ -23,7 +23,8 @@ happened to message and ask.
     agentsync claim [--ttl 45m] [--note "..."] [--wait 30m [--every 15s]] <resource>...
     agentsync release <resource>...
     agentsync claims [--all]
-    agentsync tell <resource> <what the holder needs to know>
+    agentsync tell [-f file] <resource> <what the holder needs to know>
+    agentsync tell <resource> -- <text that begins with a dash>
     agentsync messages [--max-age 24h] <resource>
     agentsync forget <resource>
     agentsync mem-add [--section "## Heading"] <memory-name> <index-line>

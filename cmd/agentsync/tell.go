@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -21,21 +22,99 @@ import (
 // It REPORTS WHO WILL READ IT, which is the part that keeps it honest: a message
 // left on a resource nobody holds is still worth leaving -- the next claimer
 // sees it -- but "told nobody" must not look like "told someone".
+// flagToken is a bare flag such as -f or --file: a dash, then a letter, then
+// nothing but word characters. It deliberately does NOT match text that merely
+// begins with a dash, because any whitespace disqualifies it.
+var flagToken = regexp.MustCompile(`^--?[A-Za-z][A-Za-z0-9._-]*$`)
+
+// tellUsage names every accepted form, because the refusal below points at it
+// and a refusal that does not name the working form is half a refusal.
+const tellUsage = `usage: agentsync tell [-f file] <resource> <what the holder needs to know>
+       agentsync tell <resource> -- <text that begins with a dash>`
+
 func tell(args []string) error {
 	fs := flag.NewFlagSet("tell", flag.ExitOnError)
+	// ⛔ -f EXISTS BECAUSE TWO SESSIONS REACHED FOR IT ON CONSECUTIVE DAYS and
+	// lost their handovers to it. `gh` has --body-file, `git commit` has -F, and
+	// this machine's own rules say to pass long text through a file; -f is the
+	// obvious generalisation and nothing contradicted it.
+	//
+	// It is parsed BEFORE the resource, which is the only place flags can live
+	// here: the long comment on parseAnywhere below explains why `tell` must
+	// stop parsing at the first positional argument -- its last argument is free
+	// text, and an index line beginning with "- [thing]" would otherwise be read
+	// as a flag.
+	file := fs.String("f", "", "read the message from this file instead of the command line")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	if fs.NArg() < 2 {
-		return errors.New(`usage: agentsync tell <resource> <what the holder needs to know>`)
+	rest := fs.Args()
+	if len(rest) < 1 {
+		return errors.New(tellUsage)
 	}
-	resource := fs.Arg(0)
-	text := strings.Join(fs.Args()[1:], " ")
+	resource, words := rest[0], rest[1:]
+
+	// `--` says the rest is literal, which is how a message that genuinely
+	// begins with a dash gets through the refusal below.
+	literal := false
+	if len(words) > 0 && words[0] == "--" {
+		literal, words = true, words[1:]
+	}
+	text := strings.Join(words, " ")
+
+	if *file != "" {
+		if text != "" {
+			return errors.New("-f and inline text are two ways to say the same thing: pass one")
+		}
+		b, err := os.ReadFile(*file)
+		if err != nil {
+			return fmt.Errorf("reading the message from %s: %w", *file, err)
+		}
+		text = strings.TrimRight(string(b), "\n")
+	}
+	if text == "" {
+		return errors.New(tellUsage)
+	}
+
+	// ⛔⛔ A FLAG IN THE MESSAGE POSITION IS A MISTAKE, NEVER A MESSAGE. Before
+	// this refusal, `agentsync tell <repo> -f note.txt` stored the literal five
+	// characters "-f" plus a path into the SENDER's volatile scratchpad, printed
+	// the ordinary confirmation and exited 0. Two sessions did it on consecutive
+	// days -- 2026-11-06 and 2026-11-07 -- and both handovers were lost in
+	// silence, because exit 0 meant "something was stored", never "your message
+	// was stored". On a machine where two dozen sessions coordinate only through
+	// these queues, a silently dropped handover is the expensive kind: the
+	// sender believes it landed and the receiver never learns there was anything
+	// to receive.
+	// ⚠ IT TESTS FOR A FLAG TOKEN, NOT FOR A LEADING DASH, and the difference is
+	// the whole correctness of this check. Free text here routinely begins with
+	// a dash -- "- [thing](thing.md): what it is" is the normal shape of an
+	// index line, and TestFreeTextArgumentsMayBeginWithADash pins it precisely
+	// so that a tidy-up cannot take it away. A dash followed by a space is
+	// prose; a bare `-f` or `--file` is not.
+	if !literal && len(words) > 0 && flagToken.MatchString(words[0]) {
+		return fmt.Errorf("%q is a flag, and flags do not go after the resource: "+
+			"a message is being read where one was meant to be sent.\n%s",
+			words[0], tellUsage)
+	}
+	// A heuristic, so it warns rather than refuses: a message that is exactly a
+	// path to a file that exists is almost never what anyone meant, but it is
+	// not malformed the way a flag is, and refusing a valid message is its own
+	// cost.
+	if st, err := os.Stat(text); err == nil && !st.IsDir() {
+		fmt.Fprintf(os.Stderr, "⚠ the message is the path of a file that exists; "+
+			"did you mean `-f %s`? Sending it as text.\n", text)
+	}
 
 	s := store()
 	if _, err := s.Tell(resource, owner(), text); err != nil {
 		return err
 	}
+	// ⭐ SAY WHAT WAS STORED, not only that something was. `tell` used to report
+	// delivery without echoing the content, so a message that had become "-f
+	// /tmp/..." looked exactly like one that had not. One truncated line makes
+	// every mistake of that family visible at the moment it is made.
+	fmt.Printf("stored   %s\n", oneLine(text))
 
 	// Who it reached, said plainly either way.
 	ls, err := s.List()

@@ -15,6 +15,104 @@ func sandbox(t *testing.T, owner string) {
 	t.Setenv("AGENTSYNC_OWNER", owner)
 }
 
+// ⛔⛔ THE FLAG THAT ATE TWO HANDOVERS. `agentsync tell <repo> -f note.txt`
+// stored the literal "-f" plus a path into the SENDER's volatile scratchpad,
+// printed the ordinary confirmation, and exited 0. It happened on 2026-11-06
+// and again on 2026-11-07, in different sessions, and both handovers were lost
+// in silence: exit 0 meant "something was stored", never "your message was".
+//
+// A message is the one thing this command exists to deliver, so a flag sitting
+// where the message goes is a mistake and not content.
+func TestAFlagWhereTheMessageGoesIsRefused(t *testing.T) {
+	sandbox(t, "sender-1111")
+
+	err := tell([]string{"o/r", "-f", "/tmp/note.txt"})
+	if err == nil {
+		t.Fatal("the flag was accepted as a message, which is the defect")
+	}
+	for _, want := range []string{"-f", "flags do not go after the resource", "agentsync tell"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the refusal does not mention %q:\n%s", want, err)
+		}
+	}
+	// And nothing was stored: a refusal that still delivers the mistake would
+	// be worse than the bug.
+	live, _, lerr := store().Messages("o/r", 0)
+	if lerr != nil {
+		t.Fatal(lerr)
+	}
+	if len(live) != 0 {
+		t.Errorf("%d message(s) stored despite the refusal: %v", len(live), live)
+	}
+}
+
+// ⭐ AND THE WORKING FORM HAS TO EXIST, or the refusal above just moves the
+// problem: two sessions reached for -f, so -f is what it means.
+func TestTheMessageCanComeFromAFile(t *testing.T) {
+	sandbox(t, "sender-1111")
+	p := filepath.Join(t.TempDir(), "note.txt")
+	body := "x/net v0.60.0 landed in #235 and is tagged — nothing to redo\n"
+	if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := tell([]string{"-f", p, "o/r"}); err != nil {
+		t.Fatal(err)
+	}
+	live, _, err := store().Messages("o/r", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(live) != 1 {
+		t.Fatalf("%d message(s) stored, want 1", len(live))
+	}
+	if got := live[0].Text; got != strings.TrimRight(body, "\n") {
+		t.Errorf("stored %q, want the file's contents", got)
+	}
+}
+
+// ⚠ Text that genuinely begins with a dash must still be sendable, or the
+// refusal costs more than the bug. `--` is how.
+func TestLiteralTextMayBeginWithADash(t *testing.T) {
+	sandbox(t, "sender-1111")
+	if err := tell([]string{"o/r", "--", "-f is a flag, and that is what I am telling you about"}); err != nil {
+		t.Fatal(err)
+	}
+	live, _, err := store().Messages("o/r", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(live) != 1 || !strings.HasPrefix(live[0].Text, "-f is a flag") {
+		t.Fatalf("stored %v, want the literal dashed text", live)
+	}
+}
+
+// The control for the refusal: ordinary messages, including the index lines
+// mem-add deals in, must be untouched by it.
+func TestAnOrdinaryMessageIsStillStored(t *testing.T) {
+	sandbox(t, "sender-1111")
+	if err := tell([]string{"o/r", "the runner has no secret; five nightly failures"}); err != nil {
+		t.Fatal(err)
+	}
+	live, _, err := store().Messages("o/r", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(live) != 1 {
+		t.Fatalf("%d message(s) stored, want 1", len(live))
+	}
+}
+
+// ⭐ And the confirmation echoes what was stored, which is what would have made
+// the two lost handovers visible at the moment they were made.
+func TestTheConfirmationEchoesTheMessage(t *testing.T) {
+	sandbox(t, "sender-1111")
+	out := said(t, func() error { return tell([]string{"o/r", "RENOVATE_TOKEN is absent"}) })
+	if !strings.Contains(out, "RENOVATE_TOKEN is absent") {
+		t.Errorf("the confirmation did not echo the message:\n%s", out)
+	}
+}
+
 // A refused session can now answer, and the holder sees it when it next looks.
 //
 // This is the whole sequence the command exists for, and it is the one that
