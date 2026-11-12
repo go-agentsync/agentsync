@@ -46,6 +46,12 @@ the repository counting. The session is `AGENTSYNC_OWNER`, else the payload's
 `session_id`, else `CLAUDE_CODE_SESSION_ID` — the identity `claim` writes under.
 A refusal is not a verdict: an unreadable payload, claims directory or remote,
 an unknown session, or `ghrelease backfill` all allow, and say so on stderr.
+A gated program counts where it is the COMMAND (first word after assignments and
+wrappers such as `sudo`, `timeout`, `xargs`, `nice`, `env`), or inside `bash -c`,
+`eval`, `$(…)` and backticks, also within double quotes; `go test ./cmd/ghmerge`
+and `cat ~/.local/bin/gitpush` name one without running it and are left alone. It
+guards against mistakes, not adversaries: `'ghmerge'`, `ghm\erge` and `$x` are
+deliberately not read.
 It was written after go-scikit pushed and merged `go-numerics/optimize#62` on a
 claim that had lapsed and been taken by another session.
 

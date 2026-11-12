@@ -246,7 +246,7 @@ type invocation struct {
 // `cd X` is followed, and a `cd` inside ( ... ) or $( ... ) is undone at the
 // closing parenthesis, as the shell does.
 func invocations(cmd, cwd, homeDir string) []invocation {
-	cmd = shellcmd.StripQuotedHeredocs(stripComments(cmd))
+	cmd = stripComments(shellcmd.StripQuotedHeredocs(cmd))
 	dir := cwd
 	var stack []string
 	var out []invocation
@@ -296,11 +296,19 @@ func scanSimple(ws []word, dir, homeDir string) ([]invocation, string) {
 		}
 		w = append(w, ws[i])
 	}
-	i := 0
-	for i < len(w) && !w[i].quoted && isAssignment(w[i].s) {
-		i++
+	var out []invocation
+	// A substitution inside double quotes runs, wherever the word sits.
+	for _, x := range w {
+		for _, sub := range x.subs {
+			out = append(out, invocations(sub, dir, homeDir)...)
+		}
 	}
-	if i < len(w) && w[i].s == "cd" {
+	i := commandIndex(w)
+	if i >= len(w) || w[i].quoted {
+		return out, dir
+	}
+	switch base := filepath.Base(w[i].s); {
+	case base == "cd":
 		args := w[i+1:]
 		for len(args) > 0 && strings.HasPrefix(args[0].s, "-") {
 			args = args[1:]
@@ -308,51 +316,115 @@ func scanSimple(ws []word, dir, homeDir string) ([]invocation, string) {
 		if len(args) > 0 {
 			dir = resolveDir(dir, args[0].s, homeDir)
 		}
-		return nil, dir
-	}
-	var out []invocation
-	nested := false
-	for _, x := range w[i:] {
-		if !x.quoted && shells[filepath.Base(x.s)] {
-			nested = true
-		}
-	}
-	if nested {
-		for _, x := range w[i:] {
-			if x.quoted && strings.ContainsAny(x.s, " \t\n") {
+	case shells[base]:
+		// What a shell or eval is handed as one quoted string is a command line.
+		for _, x := range w[i+1:] {
+			if x.quoted && strings.ContainsAny(x.s, " \t\n;&|") {
 				out = append(out, invocations(x.s, dir, homeDir)...)
 			}
 		}
-	}
-	for j := i; j < len(w); j++ {
-		if w[j].quoted {
-			continue
+		if base == "eval" {
+			var inv []invocation
+			inv, dir = scanSimple(w[i+1:], dir, homeDir)
+			out = append(out, inv...)
 		}
-		if base := filepath.Base(w[j].s); gated[base] {
-			args := make([]string, 0, len(w)-j-1)
-			for _, a := range w[j+1:] {
-				args = append(args, a.s)
-			}
-			out = append(out, invocation{prog: base, args: args, dir: dir})
-			break
+	case gated[base]:
+		args := make([]string, 0, len(w)-i-1)
+		for _, a := range w[i+1:] {
+			args = append(args, a.s)
 		}
+		out = append(out, invocation{prog: base, args: args, dir: dir})
 	}
 	return out, dir
 }
 
-// stripComments removes `#` comments: a # that starts a word and is not inside
-// quotes runs to the end of its line.
-func stripComments(cmd string) string {
-	lines := strings.Split(cmd, "\n")
-	for n, ln := range lines {
-		for i := 0; i < len(ln); i++ {
-			if ln[i] == '#' && (i == 0 || ln[i-1] == ' ' || ln[i-1] == '\t') && !shellcmd.InsideQuotes(ln, i) {
-				lines[n] = ln[:i]
-				break
+// wrappers run the command that follows them; the gate looks through them.
+var wrappers = map[string]bool{
+	"sudo": true, "timeout": true, "xargs": true, "nice": true, "nohup": true, "env": true,
+	"command": true, "exec": true, "time": true, "builtin": true, "stdbuf": true, "ionice": true,
+	// reserved words that precede a command
+	"!": true, "if": true, "then": true, "else": true, "elif": true, "do": true,
+	"while": true, "until": true, "{": true,
+}
+
+// wrapperValueFlags take the next word as their value (sudo -u bob, nice -n 5).
+var wrapperValueFlags = map[string]bool{
+	"-n": true, "-u": true, "-g": true, "-s": true, "-k": true, "-I": true, "-P": true,
+	"-L": true, "-E": true, "-C": true, "-p": true, "-r": true, "-t": true, "-d": true, "-a": true,
+}
+
+// commandIndex is the position of the word that is the command: the first one
+// after assignments and wrappers (and their options). A gated program counts
+// only there -- `go test ./cmd/ghmerge`, `cat ~/.local/bin/gitpush` and
+// `echo ghmerge` name one without running it.
+func commandIndex(w []word) int {
+	i := 0
+	for i < len(w) {
+		x := w[i]
+		if x.quoted {
+			return i
+		}
+		if isAssignment(x.s) {
+			i++
+			continue
+		}
+		base := filepath.Base(x.s)
+		if !wrappers[base] {
+			return i
+		}
+		i++
+		for i < len(w) && !w[i].quoted && strings.HasPrefix(w[i].s, "-") {
+			flag := w[i].s
+			i++
+			if wrapperValueFlags[flag] && i < len(w) {
+				i++
 			}
 		}
+		if base == "timeout" && i < len(w) && w[i].s != "" && w[i].s[0] >= '0' && w[i].s[0] <= '9' {
+			i++
+		}
 	}
-	return strings.Join(lines, "\n")
+	return i
+}
+
+// stripComments removes `#` comments: a # that starts a word and is not inside
+// quotes runs to the end of its line.
+//
+// Quote state runs across lines: a # inside a multi-line quoted string is text,
+// and dropping the rest of its line would drop a command after the closing quote.
+func stripComments(cmd string) string {
+	var b strings.Builder
+	q := byte(0)
+	for i := 0; i < len(cmd); i++ {
+		c := cmd[i]
+		switch {
+		case q != 0:
+			if c == '\\' && q == '"' && i+1 < len(cmd) {
+				b.WriteByte(c)
+				i++
+				c = cmd[i]
+			} else if c == q {
+				q = 0
+			}
+		case c == '\\' && i+1 < len(cmd):
+			b.WriteByte(c)
+			i++
+			c = cmd[i]
+		case c == '\'' || c == '"':
+			q = c
+		case c == '#' && (i == 0 || cmd[i-1] == ' ' || cmd[i-1] == '\t' || cmd[i-1] == '\n'):
+			for i < len(cmd) && cmd[i] != '\n' {
+				i++
+			}
+			if i < len(cmd) {
+				c = '\n'
+			} else {
+				return b.String()
+			}
+		}
+		b.WriteByte(c)
+	}
+	return b.String()
 }
 
 var assignRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*=`)
@@ -382,6 +454,38 @@ type word struct {
 	s      string
 	quoted bool // some of it was inside quotes or escaped
 	op     bool // | & ( ) or a backtick
+	// subs are the bodies of $(...) and `...` found inside double quotes, which
+	// the shell runs although the word is quoted.
+	subs []string
+}
+
+// substitutions returns the command substitutions inside text that sits in
+// double quotes.
+func substitutions(text string) []string {
+	var out []string
+	for i := 0; i < len(text); i++ {
+		switch {
+		case text[i] == '`':
+			if j := strings.IndexByte(text[i+1:], '`'); j >= 0 {
+				out = append(out, text[i+1:i+1+j])
+				i += j + 1
+			}
+		case text[i] == '$' && i+1 < len(text) && text[i+1] == '(':
+			depth := 0
+			for j := i + 1; j < len(text); j++ {
+				if text[j] == '(' {
+					depth++
+				} else if text[j] == ')' {
+					if depth--; depth == 0 {
+						out = append(out, text[i+2:j])
+						i = j
+						break
+					}
+				}
+			}
+		}
+	}
+	return out
 }
 
 // tokens splits one statement into words and the operators the statement
@@ -392,11 +496,12 @@ func tokens(s string) []word {
 	var out []word
 	var tok strings.Builder
 	in, quoted := false, false
+	var subs []string
 	endWord := func() {
 		if in {
-			out = append(out, word{s: tok.String(), quoted: quoted})
+			out = append(out, word{s: tok.String(), quoted: quoted, subs: subs})
 			tok.Reset()
-			in, quoted = false, false
+			in, quoted, subs = false, false, nil
 		}
 	}
 	rs := []rune(s)
@@ -410,12 +515,15 @@ func tokens(s string) []word {
 			}
 		case c == '"':
 			in, quoted = true, true
+			var body strings.Builder
 			for i++; i < len(rs) && rs[i] != '"'; i++ {
 				if rs[i] == '\\' && i+1 < len(rs) {
 					i++
 				}
 				tok.WriteRune(rs[i])
+				body.WriteRune(rs[i])
 			}
+			subs = append(subs, substitutions(body.String())...)
 		case c == '\\' && i+1 < len(rs):
 			in, quoted = true, true
 			i++
