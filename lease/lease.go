@@ -134,6 +134,21 @@ func covers(a, b string) bool {
 	return true
 }
 
+// bareNames reports whether bare is a single-segment name that is the
+// repository part of qualified: "optimize" and "go-numerics/optimize".
+//
+// The shared directory holds claims written both ways, so two sessions could
+// each hold "the same repository" with neither acquisition seeing the other --
+// and a publish gate that took the bare one for the whole answer would let one
+// of them in.
+func bareNames(bare, qualified string) bool {
+	if strings.Contains(bare, "/") {
+		return false
+	}
+	segs := strings.Split(qualified, "/")
+	return len(segs) > 1 && segs[len(segs)-1] == bare
+}
+
 // overlapping reports a live lease that encloses this resource or sits inside
 // it, held by somebody else.
 //
@@ -173,7 +188,7 @@ func (s Store) overlapping(target, key, owner string, now time.Time) *Lease {
 		if l.Owner == owner || l.Expired(now) {
 			continue
 		}
-		if covers(k, key) || covers(key, k) {
+		if covers(k, key) || covers(key, k) || bareNames(k, key) || bareNames(key, k) {
 			held := l
 			return &held
 		}
@@ -344,6 +359,39 @@ func (s Store) Release(resource, owner string) (bool, error) {
 		return false, err
 	}
 	return true, nil
+}
+
+// Covering returns every lease, expired ones included, that is about the same
+// resource as the one asked about or encloses it: "go-numerics/optimize" is
+// covered by a lease on itself and by one on "go-numerics".
+//
+// A lease written with the bare repository name ("optimize") also covers an
+// owner/repo ending in it: the shared directory holds such leases, and a gate
+// that missed them would refuse the one session that did claim.
+func (s Store) Covering(resource string) ([]Lease, error) {
+	entries, err := os.ReadDir(s.Dir)
+	if err != nil {
+		return nil, err
+	}
+	key := Normalize(resource)
+	var out []Lease
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".lease") {
+			continue
+		}
+		l, err := s.read(filepath.Join(s.Dir, e.Name()))
+		if err != nil {
+			// Unlike List, which skips a torn file to show the rest, this cannot:
+			// the unreadable one may be the holder, and answering "nobody holds
+			// it" over it is a claim about a file nobody read.
+			return nil, fmt.Errorf("lease %s is unreadable: %w", e.Name(), err)
+		}
+		k := Normalize(l.Resource)
+		if covers(k, key) || bareNames(k, key) {
+			out = append(out, l)
+		}
+	}
+	return out, nil
 }
 
 // List returns every lease, expired ones included, so a caller can show what is

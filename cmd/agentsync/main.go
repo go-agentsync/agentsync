@@ -863,10 +863,10 @@ func main() {
 		"claim": claim, "release": release, "claims": claims,
 		"mem-add": memAdd, "mem-verify": memVerify, "whoami": whoami,
 		"orphans": orphans, "mem-fold": memFold,
-		"tell": tell, "messages": messages, "forget": forget,
+		"tell": tell, "messages": messages, "forget": forget, "gate": gate,
 	}
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: agentsync {claim|release|claims|tell|messages|forget|mem-add|mem-verify|mem-fold|orphans|whoami} ...")
+		fmt.Fprintln(os.Stderr, "usage: agentsync {claim|release|claims|gate|tell|messages|forget|mem-add|mem-verify|mem-fold|orphans|whoami} ...")
 		os.Exit(2)
 	}
 	fn, ok := cmds[os.Args[1]]

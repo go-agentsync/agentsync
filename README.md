@@ -31,7 +31,32 @@ happened to message and ask.
     agentsync mem-verify [--repair=false]
     agentsync orphans
     agentsync mem-fold [--section H] [--hub NAME] [--dry-run]
+    agentsync gate --hook          # PreToolUse payload on stdin
+    agentsync gate <owner/repo>...
     agentsync whoami
+
+`gate` is what makes the claim more than advice. As a Claude Code PreToolUse
+hook it reads the Bash command and, for `gitpush`, `ghmerge`, `ghrelease`,
+`ghpr`, `ghissue`, `ghrun` and `ghrel`, resolves the target repository (an
+`owner/repo` or GitHub URL argument, else the remote of the working directory or
+of `-C`) and **denies** it when another session holds the claim (naming the
+holder and expiry) or when nobody does ("claim it first" — an expired claim is
+no claim). It allows when this session holds it, an organisation claim covering
+the repository counting. The session is `AGENTSYNC_OWNER`, else the payload's
+`session_id`, else `CLAUDE_CODE_SESSION_ID` — the identity `claim` writes under.
+A refusal is not a verdict: an unreadable payload, claims directory or remote,
+an unknown session, or `ghrelease backfill` all allow, and say so on stderr.
+A gated program counts where it is the COMMAND (first word after assignments and
+wrappers such as `sudo`, `timeout`, `xargs`, `nice`, `env`), or inside `bash -c`,
+`eval`, `$(…)` and backticks, also within double quotes; `go test ./cmd/ghmerge`
+and `cat ~/.local/bin/gitpush` name one without running it and are left alone. It
+guards against mistakes, not adversaries: `'ghmerge'`, `ghm\erge` and `$x` are
+deliberately not read.
+It was written after go-scikit pushed and merged `go-numerics/optimize#62` on a
+claim that had lapsed and been taken by another session.
+
+    {"hooks": {"PreToolUse": [{"matcher": "Bash",
+      "hooks": [{"type": "command", "command": "agentsync gate --hook"}]}]}}
 
 `tell` is the answer to a refusal, which until 2026-10-11 was a dead end. A
 refusal names the holder and prints their note — which tells the refused session
