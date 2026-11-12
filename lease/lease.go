@@ -346,6 +346,31 @@ func (s Store) Release(resource, owner string) (bool, error) {
 	return true, nil
 }
 
+// Covering returns every lease, expired ones included, that is about the same
+// resource as the one asked about or encloses it: "go-numerics/optimize" is
+// covered by a lease on itself and by one on "go-numerics".
+//
+// A lease written with the bare repository name ("optimize") also covers an
+// owner/repo ending in it: the shared directory holds such leases, and a gate
+// that missed them would refuse the one session that did claim.
+func (s Store) Covering(resource string) ([]Lease, error) {
+	all, err := s.List()
+	if err != nil {
+		return nil, err
+	}
+	key := Normalize(resource)
+	segs := strings.Split(key, "/")
+	last := segs[len(segs)-1]
+	var out []Lease
+	for _, l := range all {
+		k := Normalize(l.Resource)
+		if covers(k, key) || (len(segs) > 1 && k == last) {
+			out = append(out, l)
+		}
+	}
+	return out, nil
+}
+
 // List returns every lease, expired ones included, so a caller can show what is
 // stale rather than hide it.
 func (s Store) List() ([]Lease, error) {

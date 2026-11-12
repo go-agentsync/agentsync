@@ -443,3 +443,39 @@ func TestAnExpiredLeaseUnderTheOldFileNameDoesNotBlock(t *testing.T) {
 		t.Errorf("a dead session's old-format lease blocked the claim: %v", err)
 	}
 }
+
+// Covering is what the publish gate asks: who holds this repository, by itself,
+// by its organisation, or under the bare name -- expired ones included, and
+// never a neighbour that merely starts the same.
+func TestCoveringFindsEveryLeaseAboutARepository(t *testing.T) {
+	now := time.Now()
+	s := store(t, now)
+	// Expired, so that overlapping claims by different owners do not refuse each
+	// other: Covering reports expired leases too, and the caller judges them.
+	at := now.Add(-20 * time.Hour)
+	past := Store{Dir: s.Dir, Now: func() time.Time { return at }}
+	for _, r := range []string{"go-numerics/optimize", "go-numerics", "optimize", "go-numerics/optimize-extra", "go-tex", "other/optimize"} {
+		if _, err := past.Acquire(r, "o-"+r, "", time.Hour); err != nil {
+			t.Fatalf("%s: %v", r, err)
+		}
+		at = at.Add(2 * time.Hour) // the previous hour-long lease has lapsed
+	}
+	got, err := s.Covering("GitHub.com/go-numerics/optimize")
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]bool{}
+	for _, l := range got {
+		seen[l.Resource] = true
+	}
+	for _, want := range []string{"go-numerics/optimize", "go-numerics", "optimize"} {
+		if !seen[want] {
+			t.Errorf("%q missing from %v", want, seen)
+		}
+	}
+	for _, not := range []string{"go-numerics/optimize-extra", "go-tex", "other/optimize"} {
+		if seen[not] {
+			t.Errorf("%q must not cover go-numerics/optimize", not)
+		}
+	}
+}
