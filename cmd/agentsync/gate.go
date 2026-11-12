@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/go-agentsync/agentsync/lease"
+	"github.com/go-gitsafe/gitsafe/shellcmd"
 )
 
 // gate refuses a publishing command aimed at a repository whose claim the
@@ -69,8 +70,10 @@ type gateEnv struct {
 	// payload's session_id sits between them.
 	override, session string
 	now               func() time.Time
-	remote            func(dir, name string) (string, error) // the URL of a git remote
-	home              string
+	// remote is the URL of a git remote of the checkout in dir. push asks for the
+	// URL a push goes to; name "" asks for the remote a push goes to by default.
+	remote func(dir, name string, push bool) (string, error)
+	home   string
 }
 
 func gate(args []string) error {
@@ -175,6 +178,7 @@ func (g gateEnv) decide(repo string, errOut io.Writer) string {
 	}
 	now := g.now()
 	var other, expired *lease.Lease
+	mine := false
 	for i := range ls {
 		l := ls[i]
 		switch {
@@ -183,10 +187,16 @@ func (g gateEnv) decide(repo string, errOut io.Writer) string {
 				expired = &ls[i]
 			}
 		case l.Owner == g.owner:
-			return "" // this session holds it
+			mine = true
 		case other == nil:
 			other = &ls[i]
 		}
+	}
+	// ⛔ ANOTHER SESSION'S LIVE CLAIM DECIDES, whatever else this one holds. A
+	// bare "optimize" of mine does not outrank a live "go-numerics/optimize" of
+	// theirs: first-match-allows let exactly that through.
+	if other == nil && mine {
+		return "" // this session holds it and nobody else does
 	}
 	if other != nil {
 		note := ""
@@ -219,41 +229,130 @@ type invocation struct {
 
 // invocations finds the gated programs in a command line.
 //
-// It matches the PROGRAM of each simple command, not the word anywhere in the
-// text: `echo gitpush` and a commit message that mentions ghmerge publish
-// nothing. The cost is that a here-document whose body has a line beginning
-// with one of these words is read as that command; the gate then asks for a
-// claim the session ought to hold anyway.
+// The splitting is gitsafe's shellcmd (the reading every guard on this machine
+// shares): quoted heredoc bodies are removed and `#` comments dropped, so text
+// that merely QUOTES a command is not the command, then Statements splits on
+// ; newline && ||.
 //
-// `cd X &&` is followed, because a push is usually written `cd repo && gitpush`.
+// ⛔ WITHIN a statement it does not try to be a shell. A gated program word
+// ANYWHERE in a simple command counts, unquoted -- so `sudo gitpush`,
+// `timeout 5 ghmerge`, `xargs ghrun`, `if x; then gitpush`, `! gitpush`,
+// `$(ghmerge ..)` and backticks are all found -- because over-refusing a
+// command that names one beats missing one that runs it (recur --hook's rule).
+// A quoted word is read as a nested command line only after a shell or eval
+// (`bash -c "gitpush ..."`), never otherwise: `git commit -m 'ghmerge later'`
+// publishes nothing.
+//
+// `cd X` is followed, and a `cd` inside ( ... ) or $( ... ) is undone at the
+// closing parenthesis, as the shell does.
 func invocations(cmd, cwd, homeDir string) []invocation {
+	cmd = shellcmd.StripQuotedHeredocs(stripComments(cmd))
 	dir := cwd
+	var stack []string
 	var out []invocation
-	for _, seg := range splitCommand(cmd) {
-		i := 0
-		for i < len(seg) && (isAssignment(seg[i]) || seg[i] == "env" || seg[i] == "command" ||
-			seg[i] == "exec" || seg[i] == "time" || seg[i] == "nohup") {
-			i++
+	for _, st := range shellcmd.Statements(cmd) {
+		var words []word
+		flush := func() {
+			var inv []invocation
+			inv, dir = scanSimple(words, dir, homeDir)
+			out = append(out, inv...)
+			words = nil
 		}
-		if i >= len(seg) {
-			continue
-		}
-		prog, args := seg[i], seg[i+1:]
-		if prog == "cd" {
-			for len(args) > 0 && strings.HasPrefix(args[0], "-") {
-				args = args[1:]
+		for _, t := range tokens(st) {
+			if !t.op {
+				words = append(words, t)
+				continue
 			}
-			if len(args) > 0 {
-				dir = resolveDir(dir, args[0], homeDir)
+			flush()
+			switch t.s {
+			case "(":
+				stack = append(stack, dir)
+			case ")":
+				if n := len(stack); n > 0 {
+					dir, stack = stack[n-1], stack[:n-1]
+				}
 			}
-			continue
 		}
-		base := filepath.Base(prog)
-		if gated[base] {
-			out = append(out, invocation{prog: base, args: args, dir: dir})
-		}
+		flush()
 	}
 	return out
+}
+
+var shells = map[string]bool{"bash": true, "sh": true, "zsh": true, "dash": true, "ksh": true, "eval": true}
+
+var redirectRe = regexp.MustCompile(`^[0-9]*[<>]`)
+
+// scanSimple reads one simple command: it follows a `cd`, and returns the first
+// gated program in it, with the words after it.
+func scanSimple(ws []word, dir, homeDir string) ([]invocation, string) {
+	// Redirections are not arguments; a bare operator takes the next word with it.
+	var w []word
+	for i := 0; i < len(ws); i++ {
+		if !ws[i].quoted && redirectRe.MatchString(ws[i].s) {
+			if strings.Trim(ws[i].s, "0123456789<>&|") == "" && !strings.HasSuffix(ws[i].s, "&") {
+				i++
+			}
+			continue
+		}
+		w = append(w, ws[i])
+	}
+	i := 0
+	for i < len(w) && !w[i].quoted && isAssignment(w[i].s) {
+		i++
+	}
+	if i < len(w) && w[i].s == "cd" {
+		args := w[i+1:]
+		for len(args) > 0 && strings.HasPrefix(args[0].s, "-") {
+			args = args[1:]
+		}
+		if len(args) > 0 {
+			dir = resolveDir(dir, args[0].s, homeDir)
+		}
+		return nil, dir
+	}
+	var out []invocation
+	nested := false
+	for _, x := range w[i:] {
+		if !x.quoted && shells[filepath.Base(x.s)] {
+			nested = true
+		}
+	}
+	if nested {
+		for _, x := range w[i:] {
+			if x.quoted && strings.ContainsAny(x.s, " \t\n") {
+				out = append(out, invocations(x.s, dir, homeDir)...)
+			}
+		}
+	}
+	for j := i; j < len(w); j++ {
+		if w[j].quoted {
+			continue
+		}
+		if base := filepath.Base(w[j].s); gated[base] {
+			args := make([]string, 0, len(w)-j-1)
+			for _, a := range w[j+1:] {
+				args = append(args, a.s)
+			}
+			out = append(out, invocation{prog: base, args: args, dir: dir})
+			break
+		}
+	}
+	return out, dir
+}
+
+// stripComments removes `#` comments: a # that starts a word and is not inside
+// quotes runs to the end of its line.
+func stripComments(cmd string) string {
+	lines := strings.Split(cmd, "\n")
+	for n, ln := range lines {
+		for i := 0; i < len(ln); i++ {
+			if ln[i] == '#' && (i == 0 || ln[i-1] == ' ' || ln[i-1] == '\t') && !shellcmd.InsideQuotes(ln, i) {
+				lines[n] = ln[:i]
+				break
+			}
+		}
+	}
+	return strings.Join(lines, "\n")
 }
 
 var assignRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*=`)
@@ -278,27 +377,26 @@ func resolveDir(cur, to, homeDir string) string {
 	return filepath.Join(cur, to)
 }
 
-// splitCommand splits a shell command line into simple commands, each a list of
-// words, honouring quotes and backslashes. Operators (; & | newline and
-// parentheses) end a command. It is not a shell: anything it cannot follow
-// simply yields words that match no gated program, which allows.
-func splitCommand(s string) [][]string {
-	var segs [][]string
-	var cur []string
+// word is one shell word, or an operator that ends a simple command.
+type word struct {
+	s      string
+	quoted bool // some of it was inside quotes or escaped
+	op     bool // | & ( ) or a backtick
+}
+
+// tokens splits one statement into words and the operators the statement
+// splitter leaves inside it (pipes, a lone &, parentheses, backticks), honouring
+// quotes and backslashes. It is a word splitter, not a shell: what it cannot
+// follow it reads as plain words, which the scan above over-matches.
+func tokens(s string) []word {
+	var out []word
 	var tok strings.Builder
-	in := false
+	in, quoted := false, false
 	endWord := func() {
 		if in {
-			cur = append(cur, tok.String())
+			out = append(out, word{s: tok.String(), quoted: quoted})
 			tok.Reset()
-			in = false
-		}
-	}
-	endCmd := func() {
-		endWord()
-		if len(cur) > 0 {
-			segs = append(segs, cur)
-			cur = nil
+			in, quoted = false, false
 		}
 	}
 	rs := []rune(s)
@@ -306,12 +404,12 @@ func splitCommand(s string) [][]string {
 		c := rs[i]
 		switch {
 		case c == '\'':
-			in = true
+			in, quoted = true, true
 			for i++; i < len(rs) && rs[i] != '\''; i++ {
 				tok.WriteRune(rs[i])
 			}
 		case c == '"':
-			in = true
+			in, quoted = true, true
 			for i++; i < len(rs) && rs[i] != '"'; i++ {
 				if rs[i] == '\\' && i+1 < len(rs) {
 					i++
@@ -319,20 +417,21 @@ func splitCommand(s string) [][]string {
 				tok.WriteRune(rs[i])
 			}
 		case c == '\\' && i+1 < len(rs):
-			in = true
+			in, quoted = true, true
 			i++
 			tok.WriteRune(rs[i])
 		case c == ' ' || c == '\t':
 			endWord()
-		case c == '\n' || c == ';' || c == '&' || c == '|' || c == '(' || c == ')':
-			endCmd()
+		case c == '&' || c == '|' || c == '(' || c == ')' || c == '`':
+			endWord()
+			out = append(out, word{s: string(c), op: true})
 		default:
 			in = true
 			tok.WriteRune(c)
 		}
 	}
-	endCmd()
-	return segs
+	endWord()
+	return out
 }
 
 var repoRe = regexp.MustCompile(`^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$`)
@@ -388,13 +487,14 @@ func (g gateEnv) target(inv invocation) (string, error) {
 		}
 		return "", fmt.Errorf("cannot read a repository from %q", explicit)
 	}
-	if remote == "" {
-		remote = "origin"
+	push := inv.prog == "gitpush"
+	if remote == "" && !push {
+		remote = "origin" // the pull request's repository is the fetch side
 	}
 	if dir == "" {
 		return "", errors.New("no repository named and no working directory")
 	}
-	u, err := g.remote(dir, remote)
+	u, err := g.remote(dir, remote, push)
 	if err != nil {
 		return "", fmt.Errorf("remote %q of %s: %v", remote, dir, err)
 	}
@@ -420,16 +520,53 @@ func ownerRepo(s string) string {
 	return ""
 }
 
-// gitRemote reads the URL of a remote of the checkout in dir.
-func gitRemote(dir, name string) (string, error) {
+// git runs git in dir and returns its trimmed stdout.
+func git(dir string, args ...string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	b, err := exec.CommandContext(ctx, "git", append([]string{"-C", dir}, args...)...).Output()
+	return strings.TrimSpace(string(b)), err
+}
+
+// gitConfig is one config value, "" when it is unset (git exits 1 for that).
+func gitConfig(dir, key string) string {
+	v, _ := git(dir, "config", "--get", key)
+	return v
+}
+
+// defaultPushRemote is the remote `git push` with no remote argument uses, in
+// git's own order: branch.<b>.pushRemote, remote.pushDefault, branch.<b>.remote,
+// origin.
+func defaultPushRemote(dir string) string {
+	b, _ := git(dir, "symbolic-ref", "--short", "-q", "HEAD")
+	if b != "" {
+		if r := gitConfig(dir, "branch."+b+".pushRemote"); r != "" {
+			return r
+		}
+	}
+	if r := gitConfig(dir, "remote.pushDefault"); r != "" {
+		return r
+	}
+	if b != "" {
+		if r := gitConfig(dir, "branch."+b+".remote"); r != "" && r != "." {
+			return r
+		}
+	}
+	return "origin"
+}
+
+// gitRemote reads the URL of a remote of the checkout in dir: the one a push
+// goes to when push is set (pushurl honoured), else the fetch URL.
+func gitRemote(dir, name string, push bool) (string, error) {
+	if name == "" {
+		name = defaultPushRemote(dir)
+	}
 	if strings.HasPrefix(name, "-") {
 		return "", errors.New("not a remote name")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	b, err := exec.CommandContext(ctx, "git", "-C", dir, "remote", "get-url", name).Output()
-	if err != nil {
-		return "", err
+	args := []string{"remote", "get-url"}
+	if push {
+		args = append(args, "--push")
 	}
-	return strings.TrimSpace(string(b)), nil
+	return git(dir, append(args, name)...)
 }

@@ -30,7 +30,10 @@ func gateFixture(t *testing.T) (gateEnv, lease.Store) {
 	return gateEnv{
 		store: s, now: func() time.Time { return gateNow }, home: "/home/u",
 		override: "", session: "",
-		remote: func(dir, name string) (string, error) {
+		remote: func(dir, name string, push bool) (string, error) {
+			if name == "" {
+				name = "origin" // git's own default-remote order is tested against real git
+			}
 			if u, ok := remotes[dir+":"+name]; ok {
 				return u, nil
 			}
@@ -210,8 +213,10 @@ func TestCommandsThatPublishNothingAreLeftAlone(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, cmd := range []string{
-		"ls -la", "echo gitpush ghmerge go-numerics/optimize 62",
-		"git commit -m 'run ghmerge later'", "cat ~/.local/bin/gitpush",
+		"ls -la", "echo 'gitpush ghmerge go-numerics/optimize 62'",
+		"git commit -m 'run ghmerge later'", "git commit -m \"gitpush it\"",
+		"git commit -F - <<'EOF'\nghmerge go-numerics/optimize 62\nEOF",
+		"ls # then gitpush origin topic; ghmerge go-numerics/optimize 62",
 	} {
 		if denied, _, errOut := ask(env, payload(t, me, "/work/opt", cmd)); denied || errOut != "" {
 			t.Errorf("%q: denied=%v stderr=%q", cmd, denied, errOut)

@@ -14,3 +14,5 @@ module github.com/go-agentsync/agentsync
 // Raising it is the remedy vulngate names ("upgrade rather than carry it"), and
 // the only one: an advisory with a released fix cannot be waived here.
 go 1.27.4
+
+require github.com/go-gitsafe/gitsafe v0.49.0
