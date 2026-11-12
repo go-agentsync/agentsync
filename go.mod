@@ -13,4 +13,4 @@ module github.com/go-agentsync/agentsync
 // gate judges, and it moves whenever a standard-library advisory is fixed.
 // Raising it is the remedy vulngate names ("upgrade rather than carry it"), and
 // the only one: an advisory with a released fix cannot be waived here.
-go 1.27.3
+go 1.27.4
