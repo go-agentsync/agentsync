@@ -27,7 +27,7 @@ happened to message and ask.
     agentsync tell <resource> -- <text that begins with a dash>
     agentsync messages [--max-age 24h] <resource>
     agentsync forget <resource>
-    agentsync mem-add [--section "## Heading"] <memory-name> <index-line>
+    agentsync mem-add [--section "## Heading"] <memory-name> [<index-line>]
     agentsync mem-verify [--repair=false]
     agentsync orphans
     agentsync mem-fold [--section H] [--hub NAME] [--dry-run]
@@ -155,8 +155,18 @@ path segment, so `go-tex` does not enclose `go-texinfo`.
 `mem-add` takes a lease on the index, inserts once, and **reads the file back**
 to confirm the line survived. Trusting the write would reproduce the bug.
 
+`<memory-name>` is the file beside the index, with or without `.md`. The index
+line must link it as `[title](<memory-name>.md)`; a line that does not is refused
+with exit 2 before the index is touched (a text-only row points at nothing).
+With no `<index-line>`, mem-add builds `- [name](x.md): description` from the
+memory's frontmatter, and refuses (exit 2) naming the missing file or
+`description`.
+
 `mem-verify` re-reads every entry this session registered and puts back the ones
-that vanished, in the section they came from.
+that vanished, in the section they came from. An entry is `ok` only when its line
+is in the index AND links a memory that the walk from `MEMORY.md` through hubs
+reaches (the rule `orphans` uses); text that merely names a memory is reported
+`MISSING`, and is not re-inserted when the recorded line has no link.
 
 `orphans` reports the memories that NOTHING points at. It is the half
 `mem-verify` cannot do: that one repairs what this session wrote, and a memory
