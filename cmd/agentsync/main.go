@@ -260,6 +260,40 @@ func withIndexLease(fn func() error) error {
 	return fn()
 }
 
+// usageError is a refusal for bad arguments; main exits 2 for it, not 1.
+type usageError struct{ error }
+
+func (u usageError) Unwrap() error { return u.error }
+
+// lineFromFrontmatter builds "- [title](name.md): description" from the
+// memory's own frontmatter, and refuses naming what is missing.
+func lineFromFrontmatter(path, name string) (string, error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return "", usageError{fmt.Errorf("cannot build an index line: %s.md is not readable (%v); give the line as a second argument", name, err)}
+	}
+	fm := map[string]string{}
+	lines := strings.Split(string(b), "\n")
+	if len(lines) > 0 && strings.TrimSpace(lines[0]) == "---" {
+		for _, l := range lines[1:] {
+			if strings.TrimSpace(l) == "---" {
+				break
+			}
+			if k, v, ok := strings.Cut(l, ":"); ok {
+				fm[strings.TrimSpace(k)] = strings.Trim(strings.TrimSpace(v), `"'`)
+			}
+		}
+	}
+	if fm["description"] == "" {
+		return "", usageError{fmt.Errorf("cannot build an index line: %s.md has no frontmatter `description`; add one or give the line as a second argument", name)}
+	}
+	title := fm["name"]
+	if title == "" {
+		title = name
+	}
+	return fmt.Sprintf("- [%s](%s.md): %s", title, name, fm["description"]), nil
+}
+
 func memAdd(args []string) error {
 	fs := flag.NewFlagSet("mem-add", flag.ExitOnError)
 	section := fs.String("section", "", "append at the end of this heading's section")
@@ -267,10 +301,32 @@ func memAdd(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	if fs.NArg() != 2 {
-		return errors.New("usage: agentsync mem-add [--section H] <memory-name> <index-line>")
+	const usage = "usage: agentsync mem-add [--section H] <memory-name> [<index-line>]"
+	if fs.NArg() != 1 && fs.NArg() != 2 {
+		return usageError{errors.New(usage)}
 	}
-	name, line := fs.Arg(0), fs.Arg(1)
+	// ⛔ The name is the file's stem; "x.md" is accepted and means "x". Passing
+	// the file name verbatim used to be recorded as "x.md" and match nothing.
+	name := strings.TrimSuffix(fs.Arg(0), ".md")
+	if name == "" || strings.ContainsAny(name, "/\\()") {
+		return usageError{fmt.Errorf("%s: %q is not a memory name (the file's name beside the index, without .md)", usage, fs.Arg(0))}
+	}
+	var line string
+	if fs.NArg() == 2 {
+		line = fs.Arg(1)
+	} else {
+		built, err := lineFromFrontmatter(filepath.Join(filepath.Dir(*idx), name+".md"), name)
+		if err != nil {
+			return err
+		}
+		line = built
+	}
+	// ⛔ agentsync#27: an index line that does not link the file is not an
+	// index line. mem-add reported "indexed" for text alone, and nothing
+	// pointed at the memory. Refuse BEFORE touching the index.
+	if !strings.Contains(line, "("+name+".md)") {
+		return usageError{fmt.Errorf("the index line must link the memory as [title](%s.md); %q does not (nothing would point at the file)", name, line)}
+	}
 
 	err := withIndexLease(func() error {
 		b, err := os.ReadFile(*idx)
@@ -382,6 +438,19 @@ func reachedVia(r record, cache map[string]map[string]bool) bool {
 	return got[r.Name+".md"]
 }
 
+// lineReached reports whether the record's own line links a memory that the
+// walk from the index reaches.
+func lineReached(r record, cache map[string]map[string]bool) bool {
+	reachedVia(r, cache) // fills the cache for this index
+	got := cache[r.Index]
+	for _, m := range linkRE.FindAllStringSubmatch(r.Line, -1) {
+		if m[1] != "" && got[m[1]] {
+			return true
+		}
+	}
+	return false
+}
+
 func memVerify(args []string) error {
 	reach := map[string]map[string]bool{}
 	fs := flag.NewFlagSet("mem-verify", flag.ExitOnError)
@@ -405,7 +474,13 @@ func memVerify(args []string) error {
 			return err
 		}
 
-		if strings.Contains(string(b), r.Line) {
+		// ⛔ agentsync#27: the recorded text being in the index is NOT
+		// reachability -- a line with no link names a memory nothing points at,
+		// and this used to answer "ok" for it. "ok" now needs the line to be
+		// present AND to link a memory the walk from the index reaches (the one
+		// definition orphans uses). A walk that could not read says nothing
+		// either way, so it falls through to the checks below.
+		if strings.Contains(string(b), r.Line) && lineReached(r, reach) {
 			fmt.Printf("ok       %s\n", r.Name)
 			continue
 		}
@@ -486,6 +561,12 @@ func memVerify(args []string) error {
 		missing++
 		if !*repair {
 			fmt.Printf("MISSING  %s\n", r.Name)
+			continue
+		}
+		// A record from before mem-add refused linkless lines: re-inserting its
+		// text would repeat the bug, so say what is needed instead.
+		if !strings.Contains(r.Line, "("+r.Name+".md)") {
+			fmt.Printf("MISSING  %s (the recorded line has no link; add one with: agentsync mem-add %s)\n", r.Name, r.Name)
 			continue
 		}
 		if err := withIndexLease(func() error {
@@ -875,6 +956,11 @@ func main() {
 		os.Exit(2)
 	}
 	if err := fn(os.Args[2:]); err != nil {
+		var ue usageError
+		if errors.As(err, &ue) {
+			fmt.Fprintln(os.Stderr, "agentsync:", err)
+			os.Exit(2)
+		}
 		if errors.Is(err, errUnavailable) {
 			os.Exit(1) // a refusal is a result, not a crash
 		}
