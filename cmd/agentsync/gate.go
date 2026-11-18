@@ -144,10 +144,20 @@ func gateHook(stdin io.Reader, out, errOut io.Writer, env gateEnv) {
 		fmt.Fprintln(errOut, "agentsync gate: cannot tell which session this is; allowing (a refusal is not a verdict)")
 		return
 	}
+	var notice []string
 	for _, inv := range invs {
 		repo, err := env.target(inv)
 		if err != nil {
 			fmt.Fprintf(errOut, "agentsync gate: %s: %v; allowing (a refusal is not a verdict)\n", inv.prog, err)
+			continue
+		}
+		if trackerWrite(inv) {
+			// A tracker write touches no file of the holder's, so it needs no lease; the
+			// holder is only named, so someone can tell them.
+			if l := env.holder(repo); l != nil {
+				notice = append(notice, fmt.Sprintf("agentsync gate: %s is claimed by %s until %s; %s writes to its tracker only, which needs no lease. Tell the holder if it matters: agentsync tell %s ...",
+					repo, short(l.Owner), l.Expires.Format("15:04:05"), inv.prog, short(l.Owner)))
+			}
 			continue
 		}
 		if msg := env.decide(repo, errOut); msg != "" {
@@ -161,6 +171,71 @@ func gateHook(stdin io.Reader, out, errOut io.Writer, env gateEnv) {
 			return
 		}
 	}
+	if len(notice) > 0 {
+		for _, n := range notice {
+			fmt.Fprintln(errOut, n)
+		}
+		// Context for the model, with no permission decision: the command goes on
+		// through the ordinary permission path.
+		_ = json.NewEncoder(out).Encode(map[string]any{
+			"hookSpecificOutput": map[string]any{
+				"hookEventName":     "PreToolUse",
+				"additionalContext": strings.Join(notice, "\n"),
+			},
+		})
+	}
+}
+
+// trackerBool and trackerValue are the ONLY ghissue flags that write to the
+// tracker without touching the repository's code. Anything else (--edit,
+// --delete, --comment, an unknown flag) is not classified, so it is a code write
+// and keeps needing the lease: fail closed.
+var trackerBool = map[string]bool{"--new": true, "--close": true, "--reopen": true, "--dry-run": true}
+var trackerValue = map[string]bool{
+	"--title": true, "--body-file": true, "--reason": true, "--token-file": true, "--base": true,
+	"--allow-private-path": true, "--parity-waiver": true, "--prior-art": true, "--prior-art-waiver": true,
+	"--repo": true, "-repo": true, "-R": true,
+}
+
+// trackerWrite reports whether inv writes to the issue tracker only: a new
+// issue, a comment, a close or a reopen. The lease protects the holder's CODE
+// (branch, pull request, merge, release); an issue touches no file of theirs.
+func trackerWrite(inv invocation) bool {
+	if inv.prog != "ghissue" {
+		return false
+	}
+	for i := 0; i < len(inv.args); i++ {
+		a := inv.args[i]
+		switch {
+		case trackerBool[a]:
+		case trackerValue[a]:
+			i++
+		case strings.HasPrefix(a, "-"):
+			if k := strings.Index(a, "="); k > 0 && trackerValue[a[:k]] {
+				continue
+			}
+			return false
+		}
+	}
+	return true
+}
+
+// holder is the live claim of ANOTHER session covering repo, or nil.
+func (g gateEnv) holder(repo string) *lease.Lease {
+	if info, err := os.Stat(g.store.Dir); err != nil || !info.IsDir() {
+		return nil
+	}
+	ls, err := g.store.Covering(repo)
+	if err != nil {
+		return nil
+	}
+	now := g.now()
+	for i := range ls {
+		if !ls[i].Expired(now) && ls[i].Owner != g.owner {
+			return &ls[i]
+		}
+	}
+	return nil
 }
 
 // decide returns the refusal for publishing into repo, or "" to allow.
@@ -549,7 +624,8 @@ var valueFlags = map[string]bool{
 	"--evidence": true, "--issues-waiver": true, "--token-file": true, "--wait": true,
 	"--waive": true, "--title": true, "--body-file": true, "--notes-file": true,
 	"--ref": true, "--input": true, "--inputs-file": true, "--confirm": true,
-	"--backfill-max": true, "-o": true, "--push-option": true, "--receive-pack": true,
+	"--reason": true, "--prior-art": true, "--prior-art-waiver": true, "--allow-private-path": true,
+	"--parity-waiver": true, "--base": true, "--backfill-max": true, "-o": true, "--push-option": true, "--receive-pack": true,
 }
 
 // target names the repository a publishing command writes to, as owner/repo.
