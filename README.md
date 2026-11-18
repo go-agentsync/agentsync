@@ -52,6 +52,13 @@ wrappers such as `sudo`, `timeout`, `xargs`, `nice`, `env`), or inside `bash -c`
 and `cat ~/.local/bin/gitpush` name one without running it and are left alone. It
 guards against mistakes, not adversaries: `'ghmerge'`, `ghm\erge` and `$x` are
 deliberately not read.
+The lease protects the holder's CODE (branch, pull request, merge, release), so
+only code writes need it. A TRACKER write -- `ghissue` with `--new`, a comment,
+`--close` or `--reopen` (plus `--dry-run` and the flags that carry text) -- is
+allowed with or without a claim; when another session holds one the gate prints a
+one-line notice naming the holder, so they can be told. Anything it cannot classify
+(`ghissue --edit`, `--delete`, `--comment`, an unknown flag, every other program)
+stays refused: fail closed.
 It was written after go-scikit pushed and merged `go-numerics/optimize#62` on a
 claim that had lapsed and been taken by another session.
 
