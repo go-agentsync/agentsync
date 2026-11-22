@@ -196,9 +196,9 @@ func TestConcurrentTakeAndTouch(t *testing.T) {
 
 func shortLocks(t *testing.T) {
 	t.Helper()
-	ts, tt := lockStale, lockTimeout
-	lockStale, lockTimeout = time.Hour, 50*time.Millisecond
-	t.Cleanup(func() { lockStale, lockTimeout = ts, tt })
+	ts, tt := lockStale, lockTries
+	lockStale, lockTries = time.Hour, 30
+	t.Cleanup(func() { lockStale, lockTries = ts, tt })
 }
 
 func TestLockExcludesTimesOutAndReclaimsDebris(t *testing.T) {
@@ -236,6 +236,11 @@ func TestLockExcludesTimesOutAndReclaimsDebris(t *testing.T) {
 		t.Fatalf("a stale lock must be reclaimed: %v", err)
 	} else {
 		unlock()
+	}
+	// A lease that vanished between the failed create and the take is not an
+	// error: the caller creates again.
+	if got, done, err := s.takeOver(p, nil, Lease{}, "bob", now); done || err != nil || got.Owner != "" {
+		t.Fatalf("takeOver of a vanished lease: %v %v %v", got, done, err)
 	}
 	// A directory that is not there is an error, not a wait.
 	bad := Store{Dir: filepath.Join(t.TempDir(), "missing")}

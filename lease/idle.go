@@ -11,11 +11,13 @@ import (
 
 // lockStale is how old a per-lease lock file may get before it is taken to be
 // the debris of a process that died inside the critical section, which is a few
-// file operations long. lockTimeout is how long a caller waits for a live lock.
-// Variables so a test does not wait twenty seconds to see the timeout.
+// file operations long. lockTries is how many 1 ms polls a caller makes for a
+// live lock before giving up. Variables so a test does not wait twenty seconds
+// to see the timeout; a bounded loop, not a clock, so the bound cannot be
+// mutated into waiting for ever.
 var (
-	lockStale   = 10 * time.Second
-	lockTimeout = 20 * time.Second
+	lockStale = 10 * time.Second
+	lockTries = 20000
 )
 
 // rm removes a file; Store.remove replaces it in a test, because the failure it
@@ -31,27 +33,26 @@ func (s Store) rm(p string) error {
 // with O_EXCL, so it needs nothing from the platform; a lock older than
 // lockStale is removed rather than waited on, because a lock that can wedge is
 // the outage this package exists to prevent.
+//
+// The unlock it returns is never nil, so a caller that forgets to look at the
+// error still cannot crash on it -- and the tests, which look, can tell.
 func (s Store) lock(p string) (unlock func(), err error) {
 	lp := p + ".lock"
-	deadline := time.Now().Add(lockTimeout)
-	for {
-		f, err := os.OpenFile(lp, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
+	for try := 0; try < lockTries; try++ {
+		err := createExclusive(lp, []byte("lock"))
 		if err == nil {
-			f.Close()
 			return func() { os.Remove(lp) }, nil
 		}
 		if !errors.Is(err, os.ErrExist) {
-			return nil, err
+			return func() {}, err
 		}
 		if info, serr := os.Stat(lp); serr == nil && time.Since(info.ModTime()) > lockStale {
 			os.Remove(lp)
 			continue
 		}
-		if time.Now().After(deadline) {
-			return nil, fmt.Errorf("lease: %s: lock held for over %v", filepath.Base(p), lockTimeout)
-		}
 		time.Sleep(time.Millisecond)
 	}
+	return func() {}, fmt.Errorf("lease: %s: lock held for over %d polls", filepath.Base(p), lockTries)
 }
 
 // takeOver is the part of Acquire that runs when the lease file exists: extend
@@ -65,13 +66,12 @@ func (s Store) takeOver(p string, body []byte, l Lease, owner string, now time.T
 	}
 	defer unlock()
 	cur, rerr := s.read(p)
-	if rerr != nil {
-		// Gone, or unreadable or half-written: treated as stale rather than wedge
-		// forever on a corrupt file. If it cannot be removed the create that
-		// follows fails and the caller reports it.
-		_ = s.rm(p)
-		return Lease{}, false, nil
+	if errors.Is(rerr, os.ErrNotExist) {
+		return Lease{}, false, nil // gone since the create failed: try the create again
 	}
+	// Any other read error leaves cur the zero Lease, which has expired: an
+	// unreadable or half-written file is taken like a stale one rather than
+	// wedging the resource for ever.
 	if cur.Owner == owner {
 		// Re-entrant: extend our own rather than fail.
 		w, err := s.write(p, l)
