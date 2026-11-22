@@ -9,6 +9,12 @@
   both times the output said in full "NOBODY holds it right now". A true line is
   not a gate. A resource the store has already seen is never refused, so a
   repository whose name happens to be hex keeps working.
+- `gate --hook`'s tracker notice told every session to run the command the point
+  above now refuses: its `agentsync tell` argument was `short(l.Owner)`, a
+  **session id**, where `tell` takes a resource. It names the repository now.
+  This is the cause, not a second symptom — the session that lost two handovers
+  was doing exactly what the notice said. A test takes the command out of the
+  notice and hands it to `tell`, so the two sides cannot drift apart again.
 
 ## v0.11.1
 

@@ -160,6 +160,13 @@ Four properties, each the answer to something that has already gone wrong here:
   somewhere to go, and says nothing when it holds nothing rather than inventing
   a destination. A resource the store has already seen is never refused, so a
   repository whose name happens to be hex keeps working.
+- **And the gate stopped instructing it.** `gate --hook`'s tracker notice ended
+  with `agentsync tell <session id> ...` — the mistake above, printed by this
+  program, to every session that touched a claimed repository's tracker. The
+  session that lost those two handovers was following the notice. It names the
+  repository now, and a test pulls the command out of the notice and hands it to
+  `tell`, so the instruction and what the instruction's target accepts cannot
+  drift apart. Same defect as the bullet below, in the other direction.
 - **The flag works where your hand puts it.** `claim` and `messages` take their
   options before, after or between the resources, because this program *prints*
   `agentsync messages o/r --max-age 0 for all` and that command used to answer
