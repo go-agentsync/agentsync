@@ -186,6 +186,69 @@ func FuzzNormalizePath(f *testing.F) {
 	})
 }
 
+// Normalize stops at the FIRST pass that changes nothing.
+//
+// Without this the fixed-point comparison is not held by anything: negate it and
+// the loop runs to its bound and returns the same string, so every assertion
+// about the VALUE still passes and only the work differs. The work is the point
+// -- Normalize is called once per lease by Covering, by path and by both gates,
+// which run on every Bash command on this machine -- so the contract asserted
+// here is the number of passes, not the result.
+func TestNormalizeStopsAtTheFirstUnchangedPass(t *testing.T) {
+	saved := normalizeStep
+	t.Cleanup(func() { normalizeStep = saved })
+	calls := 0
+	normalizeStep = func(s string) string {
+		calls++
+		return saved(s)
+	}
+
+	if got := Normalize("github.com/o/r"); got != "o/r" {
+		t.Fatalf("Normalize = %q, want %q", got, "o/r")
+	}
+	// One pass to normalize, one to confirm nothing moved. A third means the
+	// loop kept going after it had its answer.
+	if calls != 2 {
+		t.Errorf("normalizeStep ran %d time(s) for a name that settles on the first pass, want 2", calls)
+	}
+}
+
+// A step that never converges RETURNS, it does not hang.
+//
+// mutsweep negated Normalize's `next == s` and the mutation HUNG instead of
+// failing a test, which is the measurement that the loop's end rested on one
+// comparison and on a comment about normalizeOnce. The step is replaced here by
+// one that grows its input forever -- what a future edit to normalizeOnce could
+// accidentally become -- and the bound is what has to answer: every Bash call on
+// this machine runs a gate through Normalize, so a non-converging step would hang
+// the command rather than mis-key a lease.
+func TestNormalizeIsBoundedEvenWhenTheStepNeverConverges(t *testing.T) {
+	saved := normalizeStep
+	t.Cleanup(func() { normalizeStep = saved })
+	calls := 0
+	normalizeStep = func(s string) string {
+		calls++
+		return s + "x"
+	}
+
+	done := make(chan string, 1)
+	go func() { done <- Normalize("o/r") }()
+	select {
+	case got := <-done:
+		// 1 call for the first step, then at most len(s)+1 in the loop. The
+		// assertion is that it RETURNED; the exact value of a divergent step is
+		// not a contract, only its finiteness.
+		if got == "" {
+			t.Errorf("returned %q, which is not the last value the step produced", got)
+		}
+		if calls < 2 {
+			t.Errorf("the step ran %d time(s), so the loop was never entered", calls)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatalf("Normalize did not return after %d step(s): the loop has no bound", calls)
+	}
+}
+
 // The crasher FuzzNormalizePath found, kept by name so the reason survives the
 // corpus file: one pass left " 0", a second made it "0".
 func TestNormalizeIsAFixedPoint(t *testing.T) {

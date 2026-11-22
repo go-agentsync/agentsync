@@ -57,7 +57,18 @@
 - **`Normalize` is a fixed point.** `FuzzNormalizePath` found, on its first run,
   that `githuB.Com/ 0` normalizes to ` 0` and a second pass to `0`: the gate
   normalizes a repository and the store normalizes it again, so one name could
-  reach two keys. It now repeats until the key stops moving.
+  reach two keys. It now repeats until the key stops moving — and the repetition
+  is **bounded**, which the fixed-point change was not. `mutsweep` negated the
+  loop's `next == s` and the mutation HUNG instead of failing a test: the only
+  thing between `Normalize` and an endless loop was that comparison plus a
+  comment arguing about a different function. Both gates run on every Bash
+  command this machine issues and normalize names read from other sessions'
+  lease files, so a step that ever grew or cycled a string would hang the
+  command rather than mis-key a lease. The limit is `len(s)+1` passes, taken
+  **once**: written `i <= len(s)` it is re-measured every pass and a growing
+  step outruns it — measured, still looping after 226,430 passes. Two tests hold
+  it: a divergent step must return, and a name that settles must cost exactly two
+  passes (the mutant returns the same string, so only the work tells them apart).
 - **An empty `tool_response` released a lease**, and the corpus above is how it
   was found. `notSucceeded` (v0.12.0) fails closed on a refused `403`, a non-zero
   exit, an interruption, a missing response and a null one — five of the six

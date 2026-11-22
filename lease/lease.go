@@ -127,16 +127,39 @@ var forgeHosts = map[string]bool{
 // on how many callers it went through. FuzzNormalizePath found it on its first
 // run: "githuB.Com/ 0" -> " 0" -> "0". Every step only shortens its input or
 // leaves it (lower-casing is idempotent), so the loop ends.
+//
+// ⛔ AND THE BOUND IS WRITTEN DOWN, because that last sentence is an argument
+// about normalizeOnce and not a property of this loop. `mutsweep` negated the
+// comparison below and the mutation HUNG rather than failing a test: the only
+// thing standing between this function and an endless loop was one `==`. Every
+// gate runs on every Bash call and normalizes names that come from other
+// sessions' lease files and from the hook payload, so an edit to normalizeOnce
+// that ever grows a string, or cycles between two, would hang the gate on every
+// command this machine runs instead of being caught by a test.
+//
+// A continuing pass strictly shortens s, so len(s)+1 passes cannot be exceeded
+// by any input that converges. Reaching the bound returns the last value: a key
+// that is merely imperfect, rather than a command that never returns.
 func Normalize(resource string) string {
-	s := normalizeOnce(resource)
-	for {
-		next := normalizeOnce(s)
+	s := normalizeStep(resource)
+	// ⛔ The limit is taken ONCE. Written as `i <= len(s)` it is re-measured every
+	// pass, so a step that grows its input outruns its own bound: measured, the
+	// loop was still running after 226,430 passes.
+	limit := len(s) + 1
+	for i := 0; i < limit; i++ {
+		next := normalizeStep(s)
 		if next == s {
 			return s
 		}
 		s = next
 	}
+	return s
 }
+
+// normalizeStep is normalizeOnce; a test replaces it, because a step that does
+// not converge is the one case this bound exists for and no input can provoke it
+// through the real one (the same reason statFile is a var in cmd/agentsync).
+var normalizeStep = normalizeOnce
 
 func normalizeOnce(resource string) string {
 	s := strings.TrimSpace(resource)
