@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+- Dependencies taken to the versions that exist: `gitsafe v0.58.1 → v0.59.0`
+  (released 2026-11-22 15:01) and the CI lane's `vulngate v0.152.0 → v0.156.0`
+  (16:01). `#24` had just brought them to v0.58.1 and v0.152.0 after sitting
+  open for 17 days, and both were already behind on the day it merged — in the
+  repository whose own job is judging, reading `gitsafe` to do it. ⛔ Measured,
+  not assumed: the two `vulngate` binaries are **not** byte-identical, so unlike
+  the 2026-10-18 bump recorded in `ci.yml` this one can change what the scan
+  reports, and the comment there now says so. `v0.157.0` was published while
+  this branch was open and is deliberately **not** taken: the claim here is a
+  measurement of v0.152.0 against v0.156.0, and extending it by analogy to a
+  version nobody hashed is the mistake this entry exists to record.
+- The entries below were released as **v0.12.0** (`c6b4562`, #44's merge) with
+  no heading of their own, so the file said "Unreleased" about a published tag.
+  The heading is written here, where it can be verified against
+  `git rev-list -n1 v0.12.0`, rather than left for the next release to guess.
+
+## v0.12.0
+
 - **Every block of `cmd/agentsync` and `lease` is entered by a test, and CI
   refuses a change that leaves one out** (#43). Measured before: 80.1% of the
   command's statements, 84.6% of both packages, 174 blocks no test entered.
@@ -38,17 +56,6 @@
   beside the mistake is still claimed, and the reason says to name the
   repository as `git remote -v` spells it. A name without a slash stays valid —
   worktree topics are claimed that way here.
-- Dependencies taken to the versions that exist: `gitsafe v0.58.1 → v0.59.0`
-  (released 2026-11-22 15:01) and the CI lane's `vulngate v0.152.0 → v0.156.0`
-  (16:01). `#24` had just brought them to v0.58.1 and v0.152.0 after sitting
-  open for 17 days, and both were already behind on the day it merged — in the
-  repository whose own job is judging, reading `gitsafe` to do it. ⛔ Measured,
-  not assumed: the two `vulngate` binaries are **not** byte-identical, so unlike
-  the 2026-10-18 bump recorded in `ci.yml` this one can change what the scan
-  reports, and the comment there now says so. `v0.157.0` was published while
-  this branch was open and is deliberately **not** taken: the claim above is a
-  measurement of v0.152.0 against v0.156.0, and extending it by analogy to a
-  version nobody hashed is the mistake this entry exists to record.
 - `tell` refuses a resource that is a **session id** — `short()`'s eight hex
   characters, or a raw UUID — because a message left on one opens a queue nobody
   will ever claim. The refusal names what that session holds, so the message has
