@@ -87,6 +87,8 @@ type Store struct {
 	// Idle is how long a holder may do nothing before another session may take
 	// the lease. Zero disables it: a lease then lasts to its deadline.
 	Idle time.Duration
+
+	remove func(string) error // nil is os.Remove; a test's way to make removal fail
 }
 
 func (s Store) now() time.Time {
@@ -290,7 +292,7 @@ func (s Store) AcquireKeep(resource, owner, note, keep string, ttl time.Duration
 		// have gone idle -- decided UNDER THE FILE'S LOCK, because the decision
 		// (read, judge, remove, create) is four steps and a holder renewing between
 		// the read and the remove would otherwise lose a lease it had just renewed.
-		got, done, err := s.takeOver(p, l, owner, now)
+		got, done, err := s.takeOver(p, body, l, owner, now)
 		if err != nil {
 			return Lease{}, err
 		}

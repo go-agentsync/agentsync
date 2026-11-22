@@ -11,8 +11,21 @@ import (
 
 // lockStale is how old a per-lease lock file may get before it is taken to be
 // the debris of a process that died inside the critical section, which is a few
-// file operations long.
-const lockStale = 10 * time.Second
+// file operations long. lockTimeout is how long a caller waits for a live lock.
+// Variables so a test does not wait twenty seconds to see the timeout.
+var (
+	lockStale   = 10 * time.Second
+	lockTimeout = 20 * time.Second
+)
+
+// rm removes a file; Store.remove replaces it in a test, because the failure it
+// guards against cannot be provoked portably with a real filesystem.
+func (s Store) rm(p string) error {
+	if s.remove != nil {
+		return s.remove(p)
+	}
+	return os.Remove(p)
+}
 
 // lock serialises every read-judge-write on ONE lease file. It is a file made
 // with O_EXCL, so it needs nothing from the platform; a lock older than
@@ -20,7 +33,7 @@ const lockStale = 10 * time.Second
 // the outage this package exists to prevent.
 func (s Store) lock(p string) (unlock func(), err error) {
 	lp := p + ".lock"
-	deadline := time.Now().Add(2 * lockStale)
+	deadline := time.Now().Add(lockTimeout)
 	for {
 		f, err := os.OpenFile(lp, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
 		if err == nil {
@@ -35,31 +48,28 @@ func (s Store) lock(p string) (unlock func(), err error) {
 			continue
 		}
 		if time.Now().After(deadline) {
-			return nil, fmt.Errorf("lease: %s: lock held for over %v", filepath.Base(p), 2*lockStale)
+			return nil, fmt.Errorf("lease: %s: lock held for over %v", filepath.Base(p), lockTimeout)
 		}
 		time.Sleep(time.Millisecond)
 	}
 }
 
 // takeOver is the part of Acquire that runs when the lease file exists: extend
-// our own, refuse a live other, or replace a takeable one. done is false when
-// the file vanished or was torn and the caller should try the create again.
-func (s Store) takeOver(p string, l Lease, owner string, now time.Time) (got Lease, done bool, err error) {
+// our own, refuse a live other, or replace a takeable one. body is l, already
+// marshalled. done is false when the file vanished or was torn and the caller
+// should try the create again.
+func (s Store) takeOver(p string, body []byte, l Lease, owner string, now time.Time) (got Lease, done bool, err error) {
 	unlock, err := s.lock(p)
 	if err != nil {
 		return Lease{}, false, err
 	}
 	defer unlock()
 	cur, rerr := s.read(p)
-	if errors.Is(rerr, os.ErrNotExist) {
-		return Lease{}, false, nil
-	}
 	if rerr != nil {
-		// Unreadable or half-written: treat as stale rather than wedge forever
-		// on a corrupt file.
-		if rmErr := os.Remove(p); rmErr != nil && !errors.Is(rmErr, os.ErrNotExist) {
-			return Lease{}, false, rmErr
-		}
+		// Gone, or unreadable or half-written: treated as stale rather than wedge
+		// forever on a corrupt file. If it cannot be removed the create that
+		// follows fails and the caller reports it.
+		_ = s.rm(p)
 		return Lease{}, false, nil
 	}
 	if cur.Owner == owner {
@@ -70,11 +80,7 @@ func (s Store) takeOver(p string, l Lease, owner string, now time.Time) (got Lea
 	if !cur.Takeable(now, s.Idle) {
 		return Lease{}, false, &Held{By: cur}
 	}
-	if err := os.Remove(p); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return Lease{}, false, err
-	}
-	body, err := json.MarshalIndent(l, "", "  ")
-	if err != nil {
+	if err := s.rm(p); err != nil {
 		return Lease{}, false, err
 	}
 	if err := createExclusive(p, body); err != nil {
@@ -105,11 +111,10 @@ func (s Store) takesPath() string { return filepath.Join(s.Dir, "takes.log") }
 func (s Store) recordTake(prev Lease, to string, now time.Time) {
 	idle := now.Sub(prev.LastActive()).Round(time.Second)
 	t := Take{Resource: prev.Resource, From: prev.Owner, To: to, At: now, IdleFor: idle.String()}
-	if body, err := json.Marshal(t); err == nil {
-		if f, err := os.OpenFile(s.takesPath(), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644); err == nil {
-			f.Write(append(body, '\n'))
-			f.Close()
-		}
+	body, _ := json.Marshal(t) // a struct of strings and a time cannot fail to marshal
+	if f, err := os.OpenFile(s.takesPath(), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644); err == nil {
+		f.Write(append(body, '\n'))
+		f.Close()
 	}
 	_, _ = s.Tell(prev.Resource, "agentsync", fmt.Sprintf(
 		"your lease on %s was taken by %s at %s after %s with no activity from you (idle limit %s). "+
@@ -170,10 +175,11 @@ func (s Store) Touch(resource, owner string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	if cur.Owner != owner || cur.Expired(s.now()) {
+	now := s.now()
+	if cur.Owner != owner || cur.Expired(now) {
 		return false, nil
 	}
-	cur.Active = s.now()
+	cur.Active = now
 	if _, err := s.write(p, cur); err != nil {
 		return false, err
 	}
@@ -206,7 +212,7 @@ func (s Store) ReleaseUnlessKept(resource, owner string) (released bool, kept st
 	if cur.Keep != "" {
 		return false, cur.Keep, nil
 	}
-	if err := os.Remove(p); err != nil {
+	if err := s.rm(p); err != nil {
 		return false, "", err
 	}
 	return true, "", nil
