@@ -32,6 +32,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"testing"
 	"time"
 
 	"github.com/go-agentsync/agentsync/lease"
@@ -47,6 +48,33 @@ func home() string {
 func root() string {
 	if v := os.Getenv("AGENTSYNC_DIR"); v != "" {
 		return v
+	}
+	// ⛔⛔ A TEST MUST NOT REACH THE DIRECTORY 25 SESSIONS COORDINATE THROUGH.
+	//
+	// Every test here sets AGENTSYNC_DIR -- sandbox() in tell_test.go exists for
+	// it, and its comment says why -- but nothing MADE them. One that forgot
+	// wrote real leases into the real store, under the fixture owner
+	// 11111111-aaaa-..., and the listing every session reads before choosing
+	// where to work then named a holder that was a test constant.
+	//
+	// Measured 2026-11-22 at 19:03: `o/r`, held by `11111111`, keep-lease
+	// "release follows the merge" -- the literal arguments of
+	// TestClaimKeepLeaseAndClaimsShowIt, live in ~/.claude/agentsync, nine
+	// minutes old. That test is sandboxed on this branch (it has been since
+	// #33/#34, 2db6442), so the writer was a clone older than that commit still
+	// being tested on this machine. The fix landing here did not stop it, and
+	// could not: a helper that must be CALLED protects only the tests that
+	// remember to call it.
+	//
+	// So the default path is refused under `go test` instead. A panic rather
+	// than a quiet fallback, because a test that silently coordinates with two
+	// dozen live sessions is the failure, and the stack trace names the test
+	// that did it. `go build` keeps the default: testing.Testing() is false
+	// there.
+	if testing.Testing() {
+		panic("agentsync: a test reached the shared claims directory. " +
+			"Set AGENTSYNC_DIR to a t.TempDir() -- see sandbox() in tell_test.go -- " +
+			"because the default path is where every live session's leases are.")
 	}
 	return filepath.Join(home(), ".claude", "agentsync")
 }

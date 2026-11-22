@@ -27,8 +27,23 @@ func anIndexWithALandingBlock(t *testing.T) (dir, index string) {
 	for _, n := range []string{"one", "two", "three"} {
 		writeMem(t, dir, n+".md", "a memory\n")
 	}
-	t.Setenv("AGENTSYNC_MEMORY", index)
+	foldSandbox(t, index)
 	return dir, index
+}
+
+// foldSandbox points BOTH directories this command writes to at this test.
+//
+// ⛔ The memory index was sandboxed and the claims directory was not, so every
+// fold test took a REAL lease in ~/.claude/agentsync -- where every live
+// session's claims are -- through memFold -> withIndexLease -> store(), and
+// said nothing about it. Found 2026-11-22 by the refusal in root(), on its
+// first run, in two tests; three call sites share this helper now, because a
+// fixture that covers one of two side effects is the shape of the defect.
+func foldSandbox(t *testing.T, index string) {
+	t.Helper()
+	t.Setenv("AGENTSYNC_MEMORY", index)
+	t.Setenv("AGENTSYNC_DIR", t.TempDir())
+	t.Setenv("AGENTSYNC_OWNER", me)
 }
 
 func TestFoldMovesTheRowsAndKeepsThemReachable(t *testing.T) {
@@ -109,7 +124,7 @@ func TestOneRowIsNotWorthFolding(t *testing.T) {
 	writeMem(t, dir, "MEMORY.md", "- [the hub](hub.md): here\n\n## Atterrissage\n\n- [one](one.md): alone\n")
 	writeMem(t, dir, "hub.md", "hub\n")
 	writeMem(t, dir, "one.md", "a memory\n")
-	t.Setenv("AGENTSYNC_MEMORY", filepath.Join(dir, "MEMORY.md"))
+	foldSandbox(t, filepath.Join(dir, "MEMORY.md"))
 	if err := memFold([]string{"--hub", "hub"}); err == nil {
 		t.Error("folded a single row")
 	}
@@ -149,7 +164,7 @@ func TestFoldTakesTheNamedSection(t *testing.T) {
 	for _, n := range []string{"a", "b", "c", "d"} {
 		writeMem(t, dir, n+".md", "m\n")
 	}
-	t.Setenv("AGENTSYNC_MEMORY", filepath.Join(dir, "MEMORY.md"))
+	foldSandbox(t, filepath.Join(dir, "MEMORY.md"))
 	if err := memFold([]string{"--hub", "hub", "--section", "## Older"}); err != nil {
 		t.Fatal(err)
 	}

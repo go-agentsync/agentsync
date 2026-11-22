@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **A test can no longer reach the shared claims directory.** `root()` panics
+  under `go test` when `AGENTSYNC_DIR` is unset, instead of returning the path
+  where every live session's leases are. It found two writers on its first run:
+  the fold tests, which sandboxed the memory index and then took real leases
+  through `withIndexLease`, and — in the shared store itself — `o/r` held by
+  `11111111`, a test's fixture owner, written by a clone older than 2db6442.
+  `go build` keeps the default path; the binary grows 16,848 bytes (+0.34%).
 - `tell` refuses a resource that is a **session id** — `short()`'s eight hex
   characters, or a raw UUID — because a message left on one opens a queue nobody
   will ever claim. The refusal names what that session holds, so the message has
