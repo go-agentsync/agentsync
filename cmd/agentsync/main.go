@@ -152,7 +152,11 @@ func short(o string) string {
 	return o
 }
 
-func store() lease.Store { return lease.Store{Dir: filepath.Join(root(), "locks")} }
+func store() lease.Store {
+	return lease.Store{Dir: filepath.Join(root(), "locks"), Idle: idleLimit()}
+}
+
+func idleLimit() time.Duration { return envDuration("AGENTSYNC_IDLE", defaultIdle) }
 
 // record is what this session claims to have put in the index, so mem-verify
 // can check it later without being told again.
@@ -657,10 +661,25 @@ func memVerify(args []string) error {
 // immediately, and should read the same.
 func waitAcquire(s lease.Store, resource, owner, note string, ttl, wait, every time.Duration,
 	now func() time.Time, sleep func(time.Duration), out io.Writer) (lease.Lease, error) {
+	return waitAcquireFor(s, resource, owner, note, "", ttl, wait, every, now, sleep, out, nil)
+}
+
+// waitAcquireFor is waitAcquire for a requester that can stop wanting the
+// lease. wanted, when not nil, is asked before EVERY attempt, the first one
+// included, and its error ends the wait: a session whose turn is over has no use
+// for a lease, and granting it one parks the resource for the queue behind it
+// (agentsync#33, variant c: a background `claim --wait` outliving its run).
+func waitAcquireFor(s lease.Store, resource, owner, note, keep string, ttl, wait, every time.Duration,
+	now func() time.Time, sleep func(time.Duration), out io.Writer, wanted func() error) (lease.Lease, error) {
 	stop := now().Add(wait)
 	announced := false
 	for attempts := 1; ; attempts++ {
-		l, err := s.Acquire(resource, owner, note, ttl)
+		if wanted != nil {
+			if err := wanted(); err != nil {
+				return lease.Lease{}, err
+			}
+		}
+		l, err := s.AcquireKeep(resource, owner, note, keep, ttl)
 		if err == nil {
 			if announced {
 				fmt.Fprintf(out, "         got it on attempt %d\n", attempts)
@@ -697,6 +716,7 @@ func claim(args []string) error {
 	note := fs.String("note", "", "what you are doing, for the next session to read")
 	wait := fs.Duration("wait", 0, "keep asking until the holder's lease lapses, up to this long")
 	every := fs.Duration("every", 15*time.Second, "how often to ask again while --wait is set")
+	keep := fs.String("keep-lease", "", "why the lease must survive a successful ghmerge/ghrelease (otherwise it is released by them)")
 	// Flags anywhere, because `claim o/r --note "..."` is what a hand reaches
 	// for and a resource name cannot look like a flag. parseAnywhere says why
 	// tell and mem-add must NOT do the same.
@@ -732,15 +752,25 @@ func claim(args []string) error {
 		var l lease.Lease
 		var err error
 		if *wait > 0 {
-			l, err = waitAcquire(s, r, owner(), *note, *ttl, *wait, *every, time.Now, time.Sleep, os.Stdout)
+			// The wait carries this session's id and is dropped once the session
+			// has gone quiet: a background wait outlives its turn otherwise.
+			me := owner()
+			projects := filepath.Join(home(), ".claude", "projects")
+			grace := envDuration("AGENTSYNC_WAIT_GRACE", defaultWaitGrace)
+			l, err = waitAcquireFor(s, r, me, *note, *keep, *ttl, *wait, *every, time.Now, time.Sleep, os.Stdout,
+				func() error { return sessionGone(projects, me, time.Now, grace) })
 		} else {
-			l, err = s.Acquire(r, owner(), *note, *ttl)
+			l, err = s.AcquireKeep(r, owner(), *note, *keep, *ttl)
 		}
 		var held *lease.Held
 		switch {
+		case errors.Is(err, errRequesterGone):
+			failed = true
+			fmt.Printf("DROPPED  %s\n         %v\n", r, err)
 		case errors.As(err, &held):
 			failed = true
 			fmt.Printf("REFUSED  %s\n         held by %s until %s\n", r, short(held.By.Owner), held.By.Expires.Format("15:04:05"))
+			fmt.Printf("         %s\n", describe(held.By, time.Now(), s.Idle))
 			if held.By.Note != "" {
 				fmt.Printf("         %q\n", held.By.Note)
 			}
@@ -748,6 +778,9 @@ func claim(args []string) error {
 			return err
 		default:
 			fmt.Printf("claimed  %s until %s\n", r, l.Expires.Format("15:04:05"))
+			if s.Idle > 0 {
+				fmt.Printf("         another session may take it after %s without a publish or a renewal\n", s.Idle)
+			}
 		}
 		// Printed on BOTH outcomes. The holder needs them because that is who
 		// they were left for; the refused session needs them because what it
@@ -906,6 +939,9 @@ func claims(args []string) error {
 			mine = "  (this session)"
 		}
 		fmt.Printf("%-8s %-42s %s until %s%s\n", state, l.Resource, short(l.Owner), l.Expires.Format("15:04:05"), mine)
+		if state == "held" {
+			fmt.Printf("         %s\n", describe(l, now, idleLimit()))
+		}
 		if l.Note != "" {
 			fmt.Printf("         %q\n", l.Note)
 		}

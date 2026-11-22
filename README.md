@@ -20,7 +20,7 @@ happened to message and ask.
 
 ## What it does
 
-    agentsync claim [--ttl 45m] [--note "..."] [--wait 30m [--every 15s]] <resource>...
+    agentsync claim [--ttl 45m] [--note "..."] [--keep-lease "<why>"] [--wait 30m [--every 15s]] <resource>...
     agentsync release <resource>...
     agentsync claims [--all]
     agentsync tell [-f file] <resource> <what the holder needs to know>
@@ -32,6 +32,7 @@ happened to message and ask.
     agentsync orphans
     agentsync mem-fold [--section H] [--hub NAME] [--dry-run]
     agentsync gate --hook          # PreToolUse payload on stdin
+    agentsync gate --post          # PostToolUse payload on stdin: release after a merge/release
     agentsync gate <owner/repo>...
     agentsync whoami
 
@@ -64,6 +65,38 @@ claim that had lapsed and been taken by another session.
 
     {"hooks": {"PreToolUse": [{"matcher": "Bash",
       "hooks": [{"type": "command", "command": "agentsync gate --hook"}]}]}}
+
+## A lease nobody is using is not a lease (v0.11.0)
+
+A claim blocks everyone else for its whole 45 minutes, and the holder pays
+nothing for that, so a note saying "release when done" failed six times
+(#33): the lease kept after the work, held while only waiting on CI, load or a
+quota, and a background `claim --wait` that outlived the run that asked for it.
+Each is now a tool's job:
+
+- **A succeeded `ghmerge` or `ghrelease` releases the holder's lease** on that
+  repository (not `gitpush` or `ghpr`: the merge still follows). It is the
+  PostToolUse hook, which Claude Code runs only for a command that succeeded:
+
+      {"hooks": {"PostToolUse": [{"matcher": "Bash",
+        "hooks": [{"type": "command", "command": "agentsync gate --post"}]}]}}
+
+  A holder that needs the lease across the merge says why when it claims:
+  `agentsync claim --keep-lease "ghrelease follows the merge" o/r`. The reason is
+  stored, shown in `claims`, and printed when the merge leaves the lease alone.
+  Only the exact repository's lease is released, never an organisation claim.
+- **A lease idle for 15 minutes may be taken.** Idle means no claim, renewal or
+  publish by the holder (an allowed gated command counts). The default is 15
+  minutes because a CI run, a quota reset or a load wait costs the queue far more
+  than that, while a holder doing real work publishes or renews well inside it;
+  `AGENTSYNC_IDLE=30m` changes it and `0` turns it off. `claims` shows
+  `idle 17m, takeable`; a `claim` by another session then succeeds, is logged in
+  `locks/takes.log`, and leaves the previous holder a message, shown on its next
+  `claim`, `release` or refused publish.
+- **A `claim --wait` is dropped when its session has gone quiet.** It asks, before
+  every attempt, whether the session's transcript was written in the last
+  12 minutes (`AGENTSYNC_WAIT_GRACE`; a foreground command cannot outlast ten).
+  An unknown session or an unreadable transcript is never dropped.
 
 `tell` is the answer to a refusal, which until 2026-10-11 was a dead end. A
 refusal names the holder and prints their note — which tells the refused session
