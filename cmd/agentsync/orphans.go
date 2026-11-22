@@ -92,11 +92,16 @@ func reachableFrom(index, dir string, all map[string]bool) map[string]bool {
 	return reached
 }
 
+// orphansIndex is a variable so a test can make memoryIndex answer "" -- which
+// it does only when the working directory cannot be read, and platforms
+// disagree about when that is. Production value: the plain call.
+var orphansIndex = memoryIndex
+
 func orphans(args []string) error {
 	if len(args) > 0 {
 		return fmt.Errorf("usage: agentsync orphans")
 	}
-	index := memoryIndex()
+	index := orphansIndex()
 	if index == "" {
 		return fmt.Errorf("agentsync: no memory index for this directory")
 	}
