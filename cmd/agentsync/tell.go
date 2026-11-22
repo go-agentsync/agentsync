@@ -71,7 +71,7 @@ const tellUsage = `usage: agentsync tell [-f file] <resource> <what the holder n
        agentsync tell <resource> -- <text that begins with a dash>`
 
 func tell(args []string) error {
-	fs := flag.NewFlagSet("tell", flag.ExitOnError)
+	fs := newFlags("tell")
 	// ⛔ -f EXISTS BECAUSE TWO SESSIONS REACHED FOR IT ON CONSECUTIVE DAYS and
 	// lost their handovers to it. `gh` has --body-file, `git commit` has -F, and
 	// this machine's own rules say to pass long text through a file; -f is the
@@ -83,7 +83,7 @@ func tell(args []string) error {
 	// text, and an index line beginning with "- [thing]" would otherwise be read
 	// as a flag.
 	file := fs.String("f", "", "read the message from this file instead of the command line")
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlags(fs, args); err != nil {
 		return err
 	}
 	rest := fs.Args()
@@ -231,7 +231,7 @@ func tell(args []string) error {
 func parseAnywhere(fs *flag.FlagSet, args []string) ([]string, error) {
 	var pos []string
 	for {
-		if err := fs.Parse(args); err != nil {
+		if err := parseFlags(fs, args); err != nil {
 			return nil, err
 		}
 		if fs.NArg() == 0 {
@@ -248,7 +248,7 @@ func parseAnywhere(fs *flag.FlagSet, args []string) ([]string, error) {
 // require taking X: a session deciding where to work asks it of several
 // resources it has no intention of holding.
 func messages(args []string) error {
-	fs := flag.NewFlagSet("messages", flag.ExitOnError)
+	fs := newFlags("messages")
 	maxAge := fs.Duration("max-age", messageWindow, "hide messages older than this; 0 shows everything")
 	rest, err := parseAnywhere(fs, args)
 	if err != nil {
@@ -283,8 +283,8 @@ func messages(args []string) error {
 // row would see different halves of one conversation, and a session that read
 // them and then died would have consumed them for everybody.
 func forget(args []string) error {
-	fs := flag.NewFlagSet("forget", flag.ExitOnError)
-	if err := fs.Parse(args); err != nil {
+	fs := newFlags("forget")
+	if err := parseFlags(fs, args); err != nil {
 		return err
 	}
 	if fs.NArg() != 1 {

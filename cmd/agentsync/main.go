@@ -38,8 +38,19 @@ import (
 	"github.com/go-agentsync/agentsync/lease"
 )
 
+// The calls below are variables only so a test can make them answer what the
+// machine will not: no home directory, a working directory that is gone, a
+// binary that is not under `go test`, an index that changes between two reads.
+// In production each is the plain call.
+var (
+	currentUser = user.Current
+	getwd       = os.Getwd
+	underTest   = testing.Testing
+	readIndex   = os.ReadFile
+)
+
 func home() string {
-	if u, err := user.Current(); err == nil && u.HomeDir != "" {
+	if u, err := currentUser(); err == nil && u.HomeDir != "" {
 		return u.HomeDir
 	}
 	return os.Getenv("HOME")
@@ -71,7 +82,7 @@ func root() string {
 	// dozen live sessions is the failure, and the stack trace names the test
 	// that did it. `go build` keeps the default: testing.Testing() is false
 	// there.
-	if testing.Testing() {
+	if underTest() {
 		panic("agentsync: a test reached the shared claims directory. " +
 			"Set AGENTSYNC_DIR to a t.TempDir() -- see sandbox() in tell_test.go -- " +
 			"because the default path is where every live session's leases are.")
@@ -128,7 +139,7 @@ func memoryIndex() string {
 	}
 	// Outside a Claude session -- a person at a shell, a test -- there is no
 	// transcript to follow and the working directory is the best there is.
-	dir, err := os.Getwd()
+	dir, err := getwd()
 	if err != nil {
 		return ""
 	}
@@ -327,10 +338,10 @@ func lineFromFrontmatter(path, name string) (string, error) {
 }
 
 func memAdd(args []string) error {
-	fs := flag.NewFlagSet("mem-add", flag.ExitOnError)
+	fs := newFlags("mem-add")
 	section := fs.String("section", "", "append at the end of this heading's section")
 	idx := fs.String("index", memoryIndex(), "path to MEMORY.md")
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlags(fs, args); err != nil {
 		return err
 	}
 	const usage = "usage: agentsync mem-add [--section H] <memory-name> [<index-line>]"
@@ -361,7 +372,7 @@ func memAdd(args []string) error {
 	}
 
 	err := withIndexLease(func() error {
-		b, err := os.ReadFile(*idx)
+		b, err := readIndex(*idx)
 		if err != nil {
 			return err
 		}
@@ -373,7 +384,7 @@ func memAdd(args []string) error {
 		}
 		// Read it BACK. The whole reason this tool exists is that a write can
 		// report success and be gone; trusting the write would reproduce the bug.
-		after, err := os.ReadFile(*idx)
+		after, err := readIndex(*idx)
 		if err != nil {
 			return err
 		}
@@ -485,9 +496,9 @@ func lineReached(r record, cache map[string]map[string]bool) bool {
 
 func memVerify(args []string) error {
 	reach := map[string]map[string]bool{}
-	fs := flag.NewFlagSet("mem-verify", flag.ExitOnError)
+	fs := newFlags("mem-verify")
 	repair := fs.Bool("repair", true, "re-insert entries that have gone missing")
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlags(fs, args); err != nil {
 		return err
 	}
 	rs, err := loadRecords()
@@ -528,7 +539,7 @@ func memVerify(args []string) error {
 			// and <name>.md does not exist. Anything else is left alone.
 			if _, err := os.Stat(memoryFile(r)); errors.Is(err, os.ErrNotExist) {
 				if err := withIndexLease(func() error {
-					b, err := os.ReadFile(r.Index)
+					b, err := readIndex(r.Index)
 					if err != nil {
 						return err
 					}
@@ -602,7 +613,7 @@ func memVerify(args []string) error {
 			continue
 		}
 		if err := withIndexLease(func() error {
-			b, err := os.ReadFile(r.Index)
+			b, err := readIndex(r.Index)
 			if err != nil {
 				return err
 			}
@@ -739,7 +750,7 @@ func waitAcquireFor(s lease.Store, resource, owner, note, keep string, ttl, wait
 }
 
 func claim(args []string) error {
-	fs := flag.NewFlagSet("claim", flag.ExitOnError)
+	fs := newFlags("claim")
 	ttl := fs.Duration("ttl", 45*time.Minute, "how long before anyone may take it")
 	note := fs.String("note", "", "what you are doing, for the next session to read")
 	wait := fs.Duration("wait", 0, "keep asking until the holder's lease lapses, up to this long")
@@ -959,9 +970,9 @@ func release(args []string) error {
 // ⛔ Hiding is announced, never silent. A tool that drops rows without saying so lies by
 // omission, and the next reader counts what is printed.
 func claims(args []string) error {
-	fs := flag.NewFlagSet("claims", flag.ExitOnError)
+	fs := newFlags("claims")
 	all := fs.Bool("all", false, "show expired leases too — they are history, not holds")
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlags(fs, args); err != nil {
 		return err
 	}
 	ls, err := store().List()
@@ -1022,32 +1033,68 @@ func whoami([]string) error {
 	return nil
 }
 
-func main() {
+// exitError is a command that has already said what it had to say and only
+// wants the process to end with this status.
+type exitError int
+
+func (e exitError) Error() string { return fmt.Sprintf("exit status %d", int(e)) }
+
+// newFlags is a flag set that reports a bad flag to the caller instead of
+// exiting on the spot, so the failure can be tested. parseFlags gives back what
+// flag.ExitOnError did: the flag package has already printed the message and
+// the usage, a request for help ends with status 0, anything else with 2.
+func newFlags(name string) *flag.FlagSet { return flag.NewFlagSet(name, flag.ContinueOnError) }
+
+func parseFlags(fs *flag.FlagSet, args []string) error {
+	err := fs.Parse(args)
+	switch {
+	case err == nil:
+		return nil
+	case errors.Is(err, flag.ErrHelp):
+		return exitError(0)
+	default:
+		return exitError(2)
+	}
+}
+
+// osExit is replaceable so a test can run main.
+var osExit = os.Exit
+
+func main() { osExit(run(os.Args)) }
+
+// run is main without the exit: it returns the process status.
+func run(argv []string) int {
 	cmds := map[string]func([]string) error{
 		"claim": claim, "release": release, "claims": claims,
 		"mem-add": memAdd, "mem-verify": memVerify, "whoami": whoami,
 		"orphans": orphans, "mem-fold": memFold,
 		"tell": tell, "messages": messages, "forget": forget, "gate": gate,
 	}
-	if len(os.Args) < 2 {
+	if len(argv) < 2 {
 		fmt.Fprintln(os.Stderr, "usage: agentsync {claim|release|claims|gate|tell|messages|forget|mem-add|mem-verify|mem-fold|orphans|whoami} ...")
-		os.Exit(2)
+		return 2
 	}
-	fn, ok := cmds[os.Args[1]]
+	fn, ok := cmds[argv[1]]
 	if !ok {
-		fmt.Fprintf(os.Stderr, "agentsync: unknown command %q\n", os.Args[1])
-		os.Exit(2)
+		fmt.Fprintf(os.Stderr, "agentsync: unknown command %q\n", argv[1])
+		return 2
 	}
-	if err := fn(os.Args[2:]); err != nil {
-		var ue usageError
-		if errors.As(err, &ue) {
-			fmt.Fprintln(os.Stderr, "agentsync:", err)
-			os.Exit(2)
-		}
-		if errors.Is(err, errUnavailable) {
-			os.Exit(1) // a refusal is a result, not a crash
-		}
+	err := fn(argv[2:])
+	if err == nil {
+		return 0
+	}
+	var ex exitError
+	if errors.As(err, &ex) {
+		return int(ex)
+	}
+	var ue usageError
+	if errors.As(err, &ue) {
 		fmt.Fprintln(os.Stderr, "agentsync:", err)
-		os.Exit(1)
+		return 2
 	}
+	if errors.Is(err, errUnavailable) {
+		return 1 // a refusal is a result, not a crash
+	}
+	fmt.Fprintln(os.Stderr, "agentsync:", err)
+	return 1
 }

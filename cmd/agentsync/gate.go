@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -79,10 +78,10 @@ type gateEnv struct {
 }
 
 func gate(args []string) error {
-	fs := flag.NewFlagSet("gate", flag.ExitOnError)
+	fs := newFlags("gate")
 	hook := fs.Bool("hook", false, "read a PreToolUse payload on stdin and answer it")
 	postHook := fs.Bool("post", false, "read a PostToolUse payload on stdin; a succeeded ghmerge/ghrelease releases the holder's lease")
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlags(fs, args); err != nil {
 		return err
 	}
 	env := gateEnv{store: store(), now: time.Now, remote: gitRemote, home: home(), idle: idleLimit()}
