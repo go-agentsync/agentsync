@@ -60,6 +60,12 @@ allowed with or without a claim; when another session holds one the gate prints 
 one-line notice naming the holder, so they can be told. Anything it cannot classify
 (`ghissue --edit`, `--delete`, `--comment`, an unknown flag, every other program)
 stays refused: fail closed.
+A command that publishes NOTHING needs no claim either: `-h`, `--help`, a leading
+`help`, `--version` and `--dry-run`. Measured 2026-11-22, `ghrelease --help` was
+refused in a clone of a repository nobody held, which is how one reads the flags
+of the very command one is about to claim for (#30). A bare `help` counts only as
+the first argument, since `--title help` is a value, and `--dry-run=false` is a
+publish; an unparseable value counts as publishing.
 It was written after go-scikit pushed and merged `go-numerics/optimize#62` on a
 claim that had lapsed and been taken by another session.
 
@@ -90,6 +96,10 @@ Each is now a tool's job:
   status: `--dry-run`, and `-h`, `--help`, `help` or `--version`. Measured
   2026-11-22, a plain `ghrelease -h` released a lease, because help exits 0 and
   writes no release, so no reading of the status could have told them apart.
+  It is the same predicate the pre-tool gate uses, and sharing it is what made it
+  strict: here, answering "publishes nothing" too often only keeps a lease that
+  could have been released, while there the same answer would let a publish run
+  with no lease at all.
 
   ⛔ **This does not yet read whether the command itself succeeded.** These lines
   used to say the hook "Claude Code runs only for a command that succeeded", and

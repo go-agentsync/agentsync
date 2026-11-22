@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- `gate --hook` no longer refuses a command that publishes nothing: `-h`,
+  `--help`, a leading `help`, `--version` and `--dry-run` need no claim at all.
+  Measured 2026-11-22, `ghrelease --help` was refused in a clone of a repository
+  nobody held — and reading a program's flags is what one does before deciding
+  whether to claim anything. (#30)
+- The predicate both gates now share is stricter than the one `gate --post`
+  shipped with, because calling it from the pre-tool gate removed its safe
+  direction: a bare `help` counts only as the first argument (`--title help` is a
+  value), and `--dry-run=false` is a publish rather than a dry run. An
+  unparseable value counts as publishing.
 - `gate --post` no longer releases a lease for an invocation that cannot have
   published anything: `-h`, `--help`, `help` and `--version` join `--dry-run`.
   Measured 2026-11-22, a plain `ghrelease -h` released a lease on a repository
