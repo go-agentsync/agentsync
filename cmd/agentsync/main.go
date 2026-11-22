@@ -896,6 +896,25 @@ func sift(args []string) (resources []string, rejected []rejection) {
 			rejected = append(rejected, rejection{a, "that is empty"})
 		case strings.ContainsAny(a, " \t"):
 			rejected = append(rejected, rejection{a, "that reads as a note, not a resource"})
+		// ⛔⛔ "." IS THE SAME STRING IN EVERY WORKING DIRECTORY, which is what
+		// makes it the worst possible resource name: it looks like "here" and
+		// behaves like a single global lock. Two sessions in two unrelated
+		// checkouts both hold "." and believe they have coordinated; a third
+		// reads `claims`, sees a holder on ".", and learns nothing about which
+		// repository is taken.
+		//
+		// Measured 2026-11-22, both live, both today: `.` held by 84a9d912 until
+		// 20:02 (seen at 19:18), and `..lease` in the shared directory, written
+		// at 14:54. A path is the same mistake spelled longer.
+		//
+		// Dropped and named rather than refused, like the cases above: the real
+		// resource beside it is still claimed, and `claim X && work` proceeds.
+		// The reason says what to write instead, because the session that typed
+		// this was trying to name where it was standing.
+		case a == "." || a == ".." || filepath.IsAbs(a) || strings.HasPrefix(a, "~"):
+			rejected = append(rejected, rejection{a, "that is a directory, not a resource: " +
+				"every session's \".\" is a different place and they would all hold the same lease -- " +
+				"name the repository, as `git remote -v` spells it"})
 		default:
 			resources = append(resources, a)
 		}

@@ -240,6 +240,39 @@ func TestASentenceStandingAloneIsNamedAsANote(t *testing.T) {
 	}
 }
 
+// ⛔⛔ "." NAMES WHERE YOU ARE STANDING AND NOTHING ELSE SEES THE SAME PLACE.
+//
+// Measured 2026-11-22, both live in the shared store on the same day: `.` held
+// by 84a9d912 until 20:02, and `..lease` written at 14:54. A lease on "."
+// is one global lock that every session's working directory maps onto, so two
+// sessions in unrelated checkouts hold it and believe they have coordinated,
+// while a third reads `claims`, sees a holder on ".", and learns nothing.
+//
+// The control is the row that must survive: a repository name with no slash --
+// mesocentre-deploy, go-authn-authnd-secretfrom -- is how worktree topics are
+// claimed here, so this must not become "a resource needs a slash".
+func TestADirectoryIsNotAResource(t *testing.T) {
+	for _, arg := range []string{".", "..", "/Users/u/Documents/VCS/GIT/localhost/go-tex-engine", "~/clone"} {
+		resources, rejected := sift([]string{"go-pdfkit/ops", arg})
+		if len(resources) != 1 || resources[0] != "go-pdfkit/ops" {
+			t.Errorf("sift(%q): resources = %q, want the repository kept", arg, resources)
+		}
+		if len(rejected) != 1 || !strings.Contains(rejected[0].why, "directory") {
+			t.Errorf("sift(%q): rejected = %+v", arg, rejected)
+		}
+		if len(rejected) == 1 && !strings.Contains(rejected[0].why, "name the repository") {
+			t.Errorf("sift(%q): the reason does not say what to write instead: %q", arg, rejected[0].why)
+		}
+	}
+	// ⛔ The control. These are real resources on this machine.
+	for _, arg := range []string{"mesocentre-deploy", "go-authn-authnd-secretfrom", "go-pdfkit/ops", "deadbeef", "a.b"} {
+		resources, rejected := sift([]string{arg})
+		if len(resources) != 1 || len(rejected) != 0 {
+			t.Errorf("sift(%q) dropped a real resource: %q, %+v", arg, resources, rejected)
+		}
+	}
+}
+
 func TestARealResourceIsNotDroppedForItsNeighbours(t *testing.T) {
 	// The point of dropping rather than refusing: the repository beside the
 	// mistake is still claimed, so "claim X && work" still proceeds. Refusing

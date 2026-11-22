@@ -346,6 +346,21 @@ sessions that ask, and cannot stop one that does not. That is precisely why
 `mem-verify` repairs rather than trusts, and why a lease expires rather than
 waiting for a release that a dead session will never send.
 
+## `.` is the worst resource name there is
+
+It reads as "here" and behaves as **one global lock**. Every session's `.` is a
+different directory, so two sessions in unrelated checkouts both hold it and
+believe they have coordinated, while a third reads `claims`, sees a holder on
+`.`, and learns nothing about which repository is taken.
+
+Measured 2026-11-22, both live the same day: `.` held by one session until
+20:02, and `..` written into the store at 14:54. `.`, `..`, an absolute path and
+a `~/`-path are now **dropped and named**, like a misplaced flag or a sentence —
+the repository beside the mistake is still claimed — and the reason says what to
+write instead. ⛔ A name without a slash stays valid: `mesocentre-deploy` and
+`go-authn-authnd-secretfrom` are how worktree topics are claimed here, so this
+is not "a resource needs a slash", and the test pins those rows as the control.
+
 ## A test must not coordinate with two dozen live sessions
 
 The claims directory is real shared state: `~/.claude/agentsync`, read by every
