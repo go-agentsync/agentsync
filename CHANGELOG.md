@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- **Every block of `cmd/agentsync` and `lease` is entered by a test, and CI
+  refuses a change that leaves one out** (#43). Measured before: 80.1% of the
+  command's statements, 84.6% of both packages, 174 blocks no test entered.
+  After: 0. The gate counts blocks (`covblocks --max 0`), not a percentage,
+  because `go tool cover -func` rounds and a gate written against it passes at
+  99.95%.
+- **A bad flag is an exit status the tests can reach.** Every command parsed its
+  flags with `flag.ExitOnError`, which calls `os.Exit` inside the command, so no
+  test could ever see it. `newFlags`/`parseFlags` return an `exitError` instead
+  (2 for a bad flag, 0 for `-h`: what `ExitOnError` did) and `run()` turns it
+  into the status, leaving `main()` one line. No behaviour changes.
+
 - **A test can no longer reach the shared claims directory.** `root()` panics
   under `go test` when `AGENTSYNC_DIR` is unset, instead of returning the path
   where every live session's leases are. It found two writers on its first run:

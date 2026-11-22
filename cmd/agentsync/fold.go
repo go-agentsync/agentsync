@@ -2,7 +2,6 @@ package main
 
 import (
 	"errors"
-	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -27,12 +26,12 @@ const readLimit = 24400
 // them in two hops instead of one — which is reachability, not loss. See the
 // comment on reachableFrom: the repair used to disagree about exactly this.
 func memFold(args []string) error {
-	fs := flag.NewFlagSet("mem-fold", flag.ExitOnError)
+	fs := newFlags("mem-fold")
 	section := fs.String("section", "", "heading whose rows to fold; default is the LAST section, where mem-add appends")
 	hubName := fs.String("hub", "defect-lessons-index", "hub file the rows move into")
 	dry := fs.Bool("dry-run", false, "say what would move, change nothing")
 	idx := fs.String("index", memoryIndex(), "path to MEMORY.md")
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlags(fs, args); err != nil {
 		return err
 	}
 	if fs.NArg() != 0 {

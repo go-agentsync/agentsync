@@ -330,15 +330,25 @@ func createExclusive(p string, body []byte) error {
 	}
 	tmp := f.Name()
 	defer os.Remove(tmp)
-	if _, err := f.Write(body); err != nil {
+	if err := tmpWrite(f, body); err != nil {
 		f.Close()
 		return err
 	}
-	if err := f.Close(); err != nil {
+	if err := tmpClose(f); err != nil {
 		return err
 	}
 	return os.Link(tmp, p)
 }
+
+// The three file operations a real filesystem cannot be made to fail portably
+// (a short write, a failing close, a rename that loses to a permission change
+// after the temporary was written). They are variables so a test can make them
+// fail; in production they are the plain os calls.
+var (
+	tmpWrite   = func(f *os.File, b []byte) error { _, err := f.Write(b); return err }
+	tmpClose   = func(f *os.File) error { return f.Close() }
+	renameFile = os.Rename
+)
 
 func (s Store) write(p string, l Lease) (Lease, error) {
 	body, err := json.MarshalIndent(l, "", "  ")
@@ -350,7 +360,7 @@ func (s Store) write(p string, l Lease) (Lease, error) {
 	if err := os.WriteFile(tmp, body, 0o644); err != nil {
 		return Lease{}, err
 	}
-	if err := os.Rename(tmp, p); err != nil {
+	if err := renameFile(tmp, p); err != nil {
 		return Lease{}, err
 	}
 	return l, nil
@@ -394,7 +404,7 @@ func (s Store) Release(resource, owner string) (bool, error) {
 	if cur.Owner != owner {
 		return false, &Held{By: cur}
 	}
-	if err := os.Remove(p); err != nil {
+	if err := s.rm(p); err != nil {
 		return false, err
 	}
 	return true, nil

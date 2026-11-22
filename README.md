@@ -393,3 +393,11 @@ default — `testing.Testing()` is false there, and the binary grows 16,848 byte
 
     go test ./...
     go build -o ~/.local/bin/agentsync ./cmd/agentsync
+
+Every block of both packages is entered by a test, and CI refuses a change that
+leaves one out. The profile has to name both packages, because the command
+exercises the lease library too:
+
+    go test -coverpkg=github.com/go-agentsync/agentsync/lease,github.com/go-agentsync/agentsync/cmd/agentsync \
+        -coverprofile=cover.out ./...
+    covblocks --max 0 cover.out     # go-fleettools/fleettools/cmd/covblocks

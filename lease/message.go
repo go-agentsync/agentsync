@@ -77,7 +77,7 @@ func (s Store) Tell(resource, from, text string) (Message, error) {
 		return Message{}, err
 	}
 	defer f.Close()
-	if _, err := f.Write(append(body, '\n')); err != nil {
+	if err := appendLine(f, append(body, '\n')); err != nil {
 		return Message{}, err
 	}
 	// Reported, not assumed: a write that returned without error can still have
@@ -85,6 +85,10 @@ func (s Store) Tell(resource, from, text string) (Message, error) {
 	// moment anybody could notice.
 	return m, f.Sync()
 }
+
+// appendLine is the one Write of a message; a variable so a test can make it
+// fail, which a real file cannot be made to do portably.
+var appendLine = func(f *os.File, b []byte) error { _, err := f.Write(b); return err }
 
 // Messages reads what has been left about a resource, dropping anything older
 // than maxAge and SAYING HOW MANY it dropped.

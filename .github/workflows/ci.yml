@@ -53,6 +53,24 @@ jobs:
       - name: test
         run: go test -race -timeout 10m ./...
 
+      # ⛔ EVERY STATEMENT OF THE PROGRAM, AND OF THE LIBRARY IT JUDGES WITH.
+      # This program coordinates ~25 sessions, and its refusals are the whole
+      # product: a branch no test reaches is a refusal nothing holds. Coverage
+      # stood at 80.1% (cmd) / 84.6% (both) when #43 measured it, with 174
+      # blocks no test entered, and the percentage was never a gate.
+      #
+      # -coverpkg names BOTH packages, because the lease library is exercised
+      # by its own tests and by the command's, and a profile of either alone
+      # judges a different set. covblocks counts BLOCKS not entered rather than
+      # a percentage, so one new untested branch cannot hide inside a rounding
+      # of the other 1,400 statements. --max 0 is the whole contract.
+      - name: coverage, every block entered
+        run: |
+          set -eu
+          go test -timeout 10m -coverpkg=github.com/go-agentsync/agentsync/lease,github.com/go-agentsync/agentsync/cmd/agentsync -coverprofile=cover.out ./...
+          go install github.com/go-fleettools/fleettools/cmd/covblocks@v0.157.0
+          "$(go env GOPATH)/bin/covblocks" --max 0 cover.out
+
       # ⛔ THE PLATFORM THIS PROGRAM ACTUALLY RUNS ON WAS NEVER COMPILED.
       # Every lane in this file is ubuntu, and the sessions this program
       # coordinates run on a Mac. buildscan said so without reporting a
