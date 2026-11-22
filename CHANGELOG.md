@@ -2,44 +2,51 @@
 
 ## Unreleased
 
-- Dependencies taken to the versions that exist: `gitsafe v0.58.1 → v0.59.0`
-  (released 2026-11-22 15:01) and the CI lane's `vulngate v0.152.0 → v0.156.0`
-  (16:01). `#24` had just brought them to v0.58.1 and v0.152.0 after sitting
-  open for 17 days, and both were already behind on the day it merged — in the
-  repository whose own job is judging, reading `gitsafe` to do it. ⛔ Measured,
-  not assumed: the two `vulngate` binaries are **not** byte-identical, so unlike
-  the 2026-10-18 bump recorded in `ci.yml` this one can change what the scan
-  reports, and the comment there now says so. `v0.157.0` was published while
-  this branch was open and is deliberately **not** taken: the claim here is a
-  measurement of v0.152.0 against v0.156.0, and extending it by analogy to a
-  version nobody hashed is the mistake this entry exists to record.
-- The entries below were released as **v0.12.0** (`c6b4562`, #44's merge) with
-  no heading of their own, so the file said "Unreleased" about a published tag.
-  The heading is written here, where it can be verified against
-  `git rev-list -n1 v0.12.0`, rather than left for the next release to guess.
+- ⛔ **v0.13.0 could not be installed, and nothing here could have noticed.**
+  The seed `lease/testdata/fuzz/FuzzNormalizePath/nul`, named after the input it
+  holds, is a path the Go module zip format refuses: `nul` is a reserved Windows
+  device name. So `go install …/cmd/agentsync@v0.13.0` fails in every clone while
+  **every CI lane stays green**, because all of them build from a *checkout* —
+  and a working tree has no such rule. Nothing between the commit and the release
+  ever packed the module; the first thing that did was a session installing the
+  tag. The seed is renamed `nul-byte` (its bytes are untouched, so it is still
+  replayed), and `internal/modzip` now packs the whole tree through
+  `golang.org/x/mod/zip` — the same package the module proxy uses, so the check
+  cannot drift from the rule — with a control that rebuilds the rejected tree in
+  a `t.TempDir()` and requires the refusal. It runs in the ordinary `go test
+  ./...` lane, so no new CI job and no release step can skip it. ⛔⛔ And the
+  worse half: the same install written `@latest` **exited 0** and left v0.12.1 in
+  place, because the proxy had not indexed the tag yet — only `go version -m` on
+  the binary showed that nothing had been installed. Pin the version when
+  verifying a release; `@latest` answers about the proxy, not about the tag.
+- The new check arrived with the defect it was written to prevent elsewhere:
+  `mutsweep` forced `parent == abs` false in `modzip.Root` and the mutation
+  **HUNG**, because that one comparison was the walk's only exit — the same
+  shape as `lease.Normalize` two entries above, written the same day. The walk
+  is bounded by one pass per character of the path, taken **once**, and the two
+  answers no input can produce (`filepath.Abs` failing, a `filepath.Dir` that
+  never shortens) are reached through vars a test replaces, as `normalizeStep`
+  and `statFile` already are. So `internal/modzip` joins the coverage gate's
+  `-coverpkg` rather than being excused from it: 1085 blocks, 0 uncovered
+  (1073 before this branch).
+- The headings below were corrected. v0.12.1 (`ab842395`) and v0.13.0
+  (`a545862a`) had both been cut while their entries sat under "Unreleased", and
+  the rebase that carried the fuzz work onto the released main left its three
+  entries *inside* the v0.12.0 section — so the file attributed them to a tag
+  published before they were written. Each tag now owns its own entries, checkable
+  against `git rev-list -n1 <tag>`.
 
-## v0.12.0
+## v0.13.0
 
-- **Every block of `cmd/agentsync` and `lease` is entered by a test, and CI
-  refuses a change that leaves one out** (#43). Measured before: 80.1% of the
-  command's statements, 84.6% of both packages, 174 blocks no test entered.
-  After: 0. The gate counts blocks (`covblocks --max 0`), not a percentage,
-  because `go tool cover -func` rounds and a gate written against it passes at
-  99.95%.
-- **A bad flag is an exit status the tests can reach.** Every command parsed its
-  flags with `flag.ExitOnError`, which calls `os.Exit` inside the command, so no
-  test could ever see it. `newFlags`/`parseFlags` return an `exitError` instead
-  (2 for a bad flag, 0 for `-h`: what `ExitOnError` did) and `run()` turns it
-  into the status, leaving `main()` one line. No behaviour changes.
-- `gate --hook` refuses `agentsync claim --wait` when the Bash call has
-  `run_in_background: true`: the wait outlives its turn and the lease is held by
-  nobody (lesson recurred 2026-11-22).
-- `gate --post` releases only when the payload shows a zero exit (fail closed):
-  PostToolUseFailure, `error`, `is_error`, a missing or string `tool_response`,
-  `interrupted`, a command run with `run_in_background` (its status is not
-  known when it detaches) and a non-zero `exit_code`/`exitCode` release nothing. The
-  payload documents no exit status, so a failure delivered as a success-shaped
-  object with none of those fields still releases.
+⛔ **This tag cannot be installed.** `go install
+github.com/go-agentsync/agentsync/cmd/agentsync@v0.13.0` fails with `create zip:
+malformed file path "lease/testdata/fuzz/FuzzNormalizePath/nul": "nul"
+disallowed as path element component on Windows`. The seed file below is named
+after the input it holds, a NUL byte, and `nul` is a reserved device name that
+the module zip format refuses. Use **v0.13.1**, which carries the same changes
+under a renamed seed plus the check that would have caught this. The tag is left
+where it is: a tag is never moved or reused.
+
 - **Fuzz targets and a committed seed corpus for every parser of input this
   program does not write.** Nine targets (`FuzzParseLease`, `FuzzParseTells`,
   `FuzzParseTakes`, `FuzzNormalizePath`, `FuzzParseRecords`, `FuzzGateHook`,
@@ -55,7 +62,8 @@
   carries the `notSucceeded` fix those seeds measured, so the five are a
   permanent assertion rather than a record of a defect.
 - **`Normalize` is a fixed point.** `FuzzNormalizePath` found, on its first run,
-  that `githuB.Com/ 0` normalizes to ` 0` and a second pass to `0`: the gate
+  that `githuB.Com/ 0` normalizes to `" 0"` — a leading space, quoted because a
+  code span swallows one — and a second pass to `"0"`: the gate
   normalizes a repository and the store normalizes it again, so one name could
   reach two keys. It now repeats until the key stops moving — and the repetition
   is **bounded**, which the fixed-point change was not. `mutsweep` negated the
@@ -80,6 +88,43 @@
   `interrupted` or `isImage`. The check counts fields rather than requiring
   `stdout` by name, so a harness that renames one keeps releasing leases instead
   of holding every one of them forever.
+
+## v0.12.1
+
+- Dependencies taken to the versions that exist: `gitsafe v0.58.1 → v0.59.0`
+  (released 2026-11-22 15:01) and the CI lane's `vulngate v0.152.0 → v0.156.0`
+  (16:01). `#24` had just brought them to v0.58.1 and v0.152.0 after sitting
+  open for 17 days, and both were already behind on the day it merged — in the
+  repository whose own job is judging, reading `gitsafe` to do it. ⛔ Measured,
+  not assumed: the two `vulngate` binaries are **not** byte-identical, so unlike
+  the 2026-10-18 bump recorded in `ci.yml` this one can change what the scan
+  reports, and the comment there now says so. `v0.157.0` was published while
+  this branch was open and is deliberately **not** taken: the claim here is a
+  measurement of v0.152.0 against v0.156.0, and extending it by analogy to a
+  version nobody hashed is the mistake this entry exists to record.
+
+## v0.12.0
+
+- **Every block of `cmd/agentsync` and `lease` is entered by a test, and CI
+  refuses a change that leaves one out** (#43). Measured before: 80.1% of the
+  command's statements, 84.6% of both packages, 174 blocks no test entered.
+  After: 0. The gate counts blocks (`covblocks --max 0`), not a percentage,
+  because `go tool cover -func` rounds and a gate written against it passes at
+  99.95%.
+- **A bad flag is an exit status the tests can reach.** Every command parsed its
+  flags with `flag.ExitOnError`, which calls `os.Exit` inside the command, so no
+  test could ever see it. `newFlags`/`parseFlags` return an `exitError` instead
+  (2 for a bad flag, 0 for `-h`: what `ExitOnError` did) and `run()` turns it
+  into the status, leaving `main()` one line. No behaviour changes.
+- `gate --hook` refuses `agentsync claim --wait` when the Bash call has
+  `run_in_background: true`: the wait outlives its turn and the lease is held by
+  nobody (lesson recurred 2026-11-22).
+- `gate --post` releases only when the payload shows a zero exit (fail closed):
+  PostToolUseFailure, `error`, `is_error`, a missing or string `tool_response`,
+  `interrupted`, a command run with `run_in_background` (its status is not
+  known when it detaches) and a non-zero `exit_code`/`exitCode` release nothing. The
+  payload documents no exit status, so a failure delivered as a success-shaped
+  object with none of those fields still releases.
 - **A test can no longer reach the shared claims directory.** `root()` panics
   under `go test` when `AGENTSYNC_DIR` is unset, instead of returning the path
   where every live session's leases are. It found two writers on its first run:
