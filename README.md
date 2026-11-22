@@ -404,19 +404,41 @@ default — `testing.Testing()` is false there, and the binary grows 16,848 byte
 
 ## Layout
 
-    lease/          the expiring advisory lock, with its tests
-    cmd/agentsync/  the CLI
+    lease/            the expiring advisory lock, with its tests
+    cmd/agentsync/    the CLI
+    internal/modzip/  can this repository be published as a module at all?
 
     go test ./...
     go build -o ~/.local/bin/agentsync ./cmd/agentsync
 
-Every block of both packages is entered by a test, and CI refuses a change that
-leaves one out. The profile has to name both packages, because the command
+Every block of all three packages is entered by a test, and CI refuses a change
+that leaves one out. The profile has to name them all, because the command
 exercises the lease library too:
 
-    go test -coverpkg=github.com/go-agentsync/agentsync/lease,github.com/go-agentsync/agentsync/cmd/agentsync \
+    go test -coverpkg=github.com/go-agentsync/agentsync/lease,github.com/go-agentsync/agentsync/cmd/agentsync,github.com/go-agentsync/agentsync/internal/modzip \
         -coverprofile=cover.out ./...
     covblocks --max 0 cover.out     # go-fleettools/fleettools/cmd/covblocks
+
+### ⛔ v0.13.0 cannot be installed, and no gate here could have noticed
+
+`go install github.com/go-agentsync/agentsync/cmd/agentsync@v0.13.0` fails with
+`create zip: malformed file path "lease/testdata/fuzz/FuzzNormalizePath/nul"`.
+That seed is named after the input it holds, a NUL byte, and `nul` is a reserved
+Windows device name the module zip format refuses. **Use v0.13.1.** The tag is
+left where it is: a tag is never moved or reused.
+
+Every CI lane was green, and would be again: all of them build from a
+*checkout*, which has no such rule. Nothing between the commit and the release
+ever packed the module — the first thing that did was a session installing the
+tag. `internal/modzip` packs the whole tree through `golang.org/x/mod/zip`, the
+same package the proxy uses, in the ordinary `go test ./...` lane:
+
+    go test ./internal/modzip
+
+⛔⛔ And the same install written `@latest` **exited 0 and installed nothing**,
+because the proxy had not indexed the tag yet; only `go version -m` on the
+binary showed that the old version was still there. Pin the version when
+verifying a release — `@latest` answers about the proxy, not about the tag.
 
 Nine fuzz targets cover every parser of input this program does not write — the
 other sessions' lease files, the message and takes logs, the records file, a
@@ -433,3 +455,10 @@ asserting that the parser survives. Three defects came out of the first runs:
 `Normalize` was not a fixed point, that fixed point had no bound (`mutsweep`
 answered **HUNG**, not *survived*, which is how an unguarded loop reports
 itself), and an empty `tool_response` released a lease.
+
+The unguarded loop then recurred the same day in `modzip.Root`, the check added
+above, and `mutsweep` answered **HUNG** there too. The pattern is worth naming:
+a walk or a normalisation whose only exit is one comparison. Bound it, take the
+limit **once**, and assert the *reason* it stopped — with a bound in place both
+exits return an error, so `err != nil` reads them as the same answer and the
+mutation goes from HUNG to SURVIVED rather than to caught.

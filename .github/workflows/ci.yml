@@ -64,10 +64,16 @@ jobs:
       # judges a different set. covblocks counts BLOCKS not entered rather than
       # a percentage, so one new untested branch cannot hide inside a rounding
       # of the other 1,400 statements. --max 0 is the whole contract.
+      #
+      # internal/modzip is in the list too. Its two unreachable answers --
+      # `filepath.Abs` failing, and a `filepath.Dir` that never shortens -- are
+      # reached through vars a test replaces, the same way lease.Normalize's
+      # step and cmd/agentsync's statFile are, so there is nothing in it this
+      # gate has to be excused from.
       - name: coverage, every block entered
         run: |
           set -eu
-          go test -timeout 10m -coverpkg=github.com/go-agentsync/agentsync/lease,github.com/go-agentsync/agentsync/cmd/agentsync -coverprofile=cover.out ./...
+          go test -timeout 10m -coverpkg=github.com/go-agentsync/agentsync/lease,github.com/go-agentsync/agentsync/cmd/agentsync,github.com/go-agentsync/agentsync/internal/modzip -coverprofile=cover.out ./...
           go install github.com/go-fleettools/fleettools/cmd/covblocks@v0.157.0
           "$(go env GOPATH)/bin/covblocks" --max 0 cover.out
 
