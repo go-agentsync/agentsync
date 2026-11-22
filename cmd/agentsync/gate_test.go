@@ -107,6 +107,61 @@ func TestAClaimHeldByAnotherSessionRefusesAndNamesTheHolder(t *testing.T) {
 	}
 }
 
+// #30, measured 2026-11-22: `ghrelease --help` was refused in a clone of a
+// repository nobody held. Reading a program's flags is what one does BEFORE
+// deciding whether to claim anything, so this gate stood between the session and
+// the instructions for the command it was about to use.
+//
+// The fixture takes no lease at all on purpose: every row here is a command that
+// the gate would otherwise refuse with "Claim it first".
+func TestReadingAProgramsFlagsNeedsNoClaim(t *testing.T) {
+	env, _ := gateFixture(t)
+	for _, cmd := range []string{
+		"ghrelease --help",
+		"ghrelease -h",
+		"ghrelease help",
+		"ghrelease --help=true",
+		"ghmerge -h",
+		"ghrel --version",
+		"ghmerge go-numerics/optimize 62 --dry-run",
+		"ghmerge go-numerics/optimize 62 --dry-run=true",
+		"ghpr go-numerics/optimize create --dry-run",
+		"cd /work/opt && gitpush --dry-run -u origin topic",
+	} {
+		denied, reason, errOut := ask(env, payload(t, me, "/work/opt", cmd))
+		if denied {
+			t.Errorf("%q denied, and it publishes nothing: %s", cmd, reason)
+		}
+		// Silence as well as the decision: a line naming a repository and a lease
+		// is what a session acts on, so saying it about a command that touches
+		// neither is the same defect one layer up.
+		if errOut != "" {
+			t.Errorf("%q said %q on stderr; it should say nothing", cmd, errOut)
+		}
+	}
+}
+
+// The other side of the same predicate, and the reason it is not a trim: both of
+// these look like a request for help or a dry run to a reading that strips
+// dashes and matches prefixes, and both PUBLISH.
+func TestAValueNamedHelpAndADryRunSwitchedOffStillNeedAClaim(t *testing.T) {
+	env, _ := gateFixture(t)
+	for _, cmd := range []string{
+		// `help` is cobra's subcommand, so it counts only as the first argument;
+		// here it is the title of a pull request being edited for real.
+		"ghpr go-numerics/optimize 62 edit --title help",
+		// An explicit false: the merge happens.
+		"ghmerge go-numerics/optimize 62 --dry-run=false",
+		// A value neither true nor false is not a dry run one can rely on.
+		"ghmerge go-numerics/optimize 62 --dry-run=maybe",
+	} {
+		denied, _, _ := ask(env, payload(t, me, "/work/opt", cmd))
+		if !denied {
+			t.Errorf("%q was allowed with no claim; it publishes", cmd)
+		}
+	}
+}
+
 func TestNoClaimAtAllRefusesAndSaysClaimItFirst(t *testing.T) {
 	env, _ := gateFixture(t)
 	denied, reason, _ := ask(env, payload(t, me, "/work/opt", "ghmerge go-numerics/optimize 62"))

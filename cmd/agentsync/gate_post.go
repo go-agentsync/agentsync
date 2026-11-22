@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -67,19 +68,43 @@ var finishers = map[string]bool{"ghmerge": true, "ghrelease": true}
 // MEANS to do, while -h is something one types in the middle of reading.
 //
 // A bare `help` word counts too, since these are cobra commands and
-// `ghrelease help` is the same request. Over-excluding is the safe direction: it
-// keeps a lease that could have been released, which is the behaviour this gate
-// replaced, whereas under-excluding hands a repository to another session in the
-// middle of the work.
+// `ghrelease help` is the same request.
+//
+// ⛔⛔ BOTH GATES CALL THIS, AND THEY WANT OPPOSITE MISTAKES. In the post-tool
+// gate, answering "nothing" too often keeps a lease that could have been
+// released -- the behaviour this gate replaced, a known cost. In the pre-tool
+// gate (#30) the same answer lets a publish run with NO LEASE AT ALL. So there
+// is no safe direction any more, and the two shapes that only looked right are
+// spelled out rather than trimmed:
+//
+//   - a bare `help` is cobra's help SUBCOMMAND, so it counts only as the FIRST
+//     argument. Anywhere else it is a value -- `ghpr … edit --title help` -- and
+//     reading that as a request for help would hand over the repository.
+//   - `--dry-run=false` IS a publish. Matching any `dry-run=` prefix, as this
+//     did, read it as a dry run. Every one of these flags is declared
+//     `[=true|false]` by cobra, so the value is parsed for all four rather than
+//     for the one where the mistake was found.
+//
+// An unparseable value (`--dry-run=maybe`) counts as publishing: the strict
+// answer for the pre-tool gate, and for the post-tool one the answer it gave
+// before this predicate existed.
 func publishesNothing(args []string) bool {
-	for _, a := range args {
-		a = strings.TrimLeft(a, "-")
-		switch a {
-		case "dry-run", "h", "help", "version":
+	for i, a := range args {
+		if i == 0 && a == "help" {
 			return true
 		}
-		if strings.HasPrefix(a, "dry-run=") {
-			return true
+		if !strings.HasPrefix(a, "-") {
+			continue // a value, not a flag
+		}
+		name, val, hasVal := strings.Cut(strings.TrimLeft(a, "-"), "=")
+		switch name {
+		case "dry-run", "h", "help", "version":
+			if !hasVal {
+				return true
+			}
+			if b, err := strconv.ParseBool(val); err == nil && b {
+				return true
+			}
 		}
 	}
 	return false
