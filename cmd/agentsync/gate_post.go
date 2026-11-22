@@ -210,6 +210,13 @@ func notSucceeded(raw []byte) string {
 	if json.Unmarshal(p["is_error"], &b) == nil && b {
 		return "the payload says is_error"
 	}
+	// A backgrounded command is reported the instant it detaches: its exit status
+	// does not exist yet, and it may fail seconds later (measured 2026-11-22, a
+	// backgrounded ghrelease judged "succeeded" and then exited 1).
+	var in map[string]json.RawMessage
+	if json.Unmarshal(p["tool_input"], &in) == nil && json.Unmarshal(in["run_in_background"], &b) == nil && b {
+		return "the command ran in the background, so its exit status is not known yet"
+	}
 	resp, ok := p["tool_response"]
 	if !ok || string(resp) == "null" {
 		return "the payload has no tool_response"

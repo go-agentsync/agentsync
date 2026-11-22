@@ -18,7 +18,8 @@
   nobody (lesson recurred 2026-11-22).
 - `gate --post` releases only when the payload shows a zero exit (fail closed):
   PostToolUseFailure, `error`, `is_error`, a missing or string `tool_response`,
-  `interrupted` and a non-zero `exit_code`/`exitCode` release nothing. The
+  `interrupted`, a command run with `run_in_background` (its status is not
+  known when it detaches) and a non-zero `exit_code`/`exitCode` release nothing. The
   payload documents no exit status, so a failure delivered as a success-shaped
   object with none of those fields still releases.
 - **A test can no longer reach the shared claims directory.** `root()` panics

@@ -109,6 +109,33 @@ func TestAnUnrelatedCommandIsSilentEvenWithoutASession(t *testing.T) {
 	}
 }
 
+// ⛔ Measured 2026-11-22: a backgrounded ghrelease was judged a success the
+// instant it detached, then exited 1. Its status is not known, so nothing is
+// released; a foreground call (flag false) still is.
+func TestABackgroundedMergeReleasesNothing(t *testing.T) {
+	for flag, wantHeld := range map[bool]bool{true: true, false: false} {
+		env, s := gateFixture(t)
+		if _, err := s.Acquire("go-fleettools/docs", me, "", 45*time.Minute); err != nil {
+			t.Fatal(err)
+		}
+		postRaw(t, env, map[string]any{
+			"session_id": me, "cwd": "/work/opt", "hook_event_name": "PostToolUse",
+			"tool_input":    map[string]any{"command": "ghrelease go-fleettools/docs 44 v1.0.0", "run_in_background": flag},
+			"tool_response": okResponse(),
+		})
+		if holds(t, s, "go-fleettools/docs", me) != wantHeld {
+			t.Errorf("run_in_background=%v: lease held = %v, want %v", flag, !wantHeld, wantHeld)
+		}
+	}
+	b, _ := json.Marshal(map[string]any{
+		"hook_event_name": "PostToolUse", "tool_response": okResponse(),
+		"tool_input": map[string]any{"run_in_background": true},
+	})
+	if got := notSucceeded(b); !strings.Contains(got, "background") {
+		t.Errorf("notSucceeded = %q, want the background reason", got)
+	}
+}
+
 // A zero exit status, spelled out, still releases.
 func TestAnExplicitZeroExitStillReleases(t *testing.T) {
 	env, s := gateFixture(t)
