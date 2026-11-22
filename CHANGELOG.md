@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+- `gate --post` no longer releases a lease for an invocation that cannot have
+  published anything: `-h`, `--help`, `help` and `--version` join `--dry-run`.
+  Measured 2026-11-22, a plain `ghrelease -h` released a lease on a repository
+  whose work was unfinished; help exits 0 and writes no release, so the exit
+  status could never have told them apart.
+- The claim that Claude Code runs PostToolUse only for a command that succeeded
+  is removed from the code comment and the README, because it is false: a `Bash`
+  call running a program that exits non-zero is a tool call that worked. A
+  `ghmerge` refused with a 403 released the lease on a merge that never happened.
+  Reading the payload's `tool_response` is still to do.
+
 ## v0.11.0
 
 - A succeeded `ghmerge`/`ghrelease` releases the holder's lease on that repository
