@@ -128,7 +128,7 @@ func TestAnExplicitZeroExitStillReleases(t *testing.T) {
 // ⛔ Measured 2026-11-22: a plain `ghrelease -h` released a lease. It exits 0, so
 // only the command line tells it from a release (publishesNothing).
 func TestHelpReleasesNothing(t *testing.T) {
-	for _, cmd := range []string{"ghrelease go-gitsafe/gitsafe -h", "ghrelease go-gitsafe/gitsafe --help", "ghmerge go-gitsafe/gitsafe help", "ghrelease go-gitsafe/gitsafe --version"} {
+	for _, cmd := range []string{"ghrelease go-gitsafe/gitsafe -h", "ghrelease go-gitsafe/gitsafe --help", "ghmerge help", "ghrelease go-gitsafe/gitsafe --version"} {
 		env, s := gateFixture(t)
 		if _, err := s.Acquire("go-gitsafe/gitsafe", me, "", 45*time.Minute); err != nil {
 			t.Fatal(err)
