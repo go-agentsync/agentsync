@@ -16,11 +16,155 @@ func post(t *testing.T, env gateEnv, session, cwd, command string) (out, errOut 
 	t.Helper()
 	b, _ := json.Marshal(map[string]any{
 		"session_id": session, "cwd": cwd, "tool_name": "Bash", "hook_event_name": "PostToolUse",
-		"tool_input": map[string]any{"command": command},
+		"tool_input":    map[string]any{"command": command},
+		"tool_response": okResponse(),
 	})
 	var o, e bytes.Buffer
 	gatePost(bytes.NewReader(b), &o, &e, env)
 	return o.String(), e.String()
+}
+
+// okResponse is the documented Bash tool_response of a command that ran to
+// completion: stdout, stderr, interrupted, isImage (Claude Code hooks reference).
+func okResponse() map[string]any {
+	return map[string]any{"stdout": "merged\n", "stderr": "", "interrupted": false, "isImage": false}
+}
+
+// postRaw feeds gatePost a payload built by the caller, for the shapes a failed
+// command can arrive in.
+func postRaw(t *testing.T, env gateEnv, fields map[string]any) {
+	t.Helper()
+	fields["tool_name"] = "Bash"
+	b, _ := json.Marshal(fields)
+	var o, e bytes.Buffer
+	gatePost(bytes.NewReader(b), &o, &e, env)
+}
+
+// ⛔ Measured 2026-11-22: `ghmerge go-fleettools/docs 44` exited 1 (403, budget
+// exhausted) and the hook still released the lease. A release needs the tool's
+// exit status to be 0, and Claude Code delivers a non-zero status as
+// "Exit code N" in `error` (PostToolUseFailure), or as a string tool_response.
+func TestAFailedMergeReleasesNothing(t *testing.T) {
+	const cmd = "ghmerge go-fleettools/docs 44"
+	const refused = "Exit code 1\nGitHub refused this (403) reporting the core budget exhausted until 17:48:59"
+	for name, f := range map[string]map[string]any{
+		"failure event":         {"hook_event_name": "PostToolUseFailure", "error": refused},
+		"error field":           {"hook_event_name": "PostToolUse", "error": refused, "tool_response": okResponse()},
+		"string response":       {"hook_event_name": "PostToolUse", "tool_response": refused},
+		"is_error":              {"hook_event_name": "PostToolUse", "is_error": true, "tool_response": okResponse()},
+		"interrupted":           {"hook_event_name": "PostToolUse", "tool_response": map[string]any{"stdout": "", "stderr": "", "interrupted": true}},
+		"exit_code 1":           {"hook_event_name": "PostToolUse", "tool_response": map[string]any{"stdout": "", "stderr": "x", "interrupted": false, "exit_code": 1}},
+		"exitCode 1":            {"hook_event_name": "PostToolUse", "tool_response": map[string]any{"stdout": "", "stderr": "x", "exitCode": 1}},
+		"no response at all":    {"hook_event_name": "PostToolUse"},
+		"response is a number":  {"hook_event_name": "PostToolUse", "tool_response": 1},
+		"exit_code as a string": {"hook_event_name": "PostToolUse", "tool_response": map[string]any{"stdout": "", "exit_code": "1"}},
+	} {
+		env, s := gateFixture(t)
+		if _, err := s.Acquire("go-fleettools/docs", me, "", 45*time.Minute); err != nil {
+			t.Fatal(err)
+		}
+		f["session_id"], f["cwd"], f["tool_input"] = me, "/work/opt", map[string]any{"command": cmd}
+		postRaw(t, env, f)
+		if !holds(t, s, "go-fleettools/docs", me) {
+			t.Errorf("%s: a merge that did not succeed released the lease", name)
+		}
+	}
+}
+
+// Each reason is its own branch, so each is asserted by the reason it gives:
+// a case that another branch also catches would let this one be deleted.
+func TestEachFailureShapeSaysItsOwnReason(t *testing.T) {
+	for name, tc := range map[string]struct {
+		fields map[string]any
+		want   string
+	}{
+		"failure event alone": {map[string]any{"hook_event_name": "PostToolUseFailure", "tool_response": okResponse()}, "PostToolUseFailure"},
+		"no response alone":   {map[string]any{"hook_event_name": "PostToolUse"}, "no tool_response"},
+		"null response":       {map[string]any{"hook_event_name": "PostToolUse", "tool_response": nil}, "no tool_response"},
+		"error alone":         {map[string]any{"hook_event_name": "PostToolUse", "tool_response": okResponse(), "error": "Exit code 1"}, "carries an error"},
+		"is_error alone":      {map[string]any{"hook_event_name": "PostToolUse", "tool_response": okResponse(), "is_error": true}, "is_error"},
+		"empty error is none": {map[string]any{"hook_event_name": "PostToolUse", "tool_response": okResponse(), "error": ""}, ""},
+		"null error is none":  {map[string]any{"hook_event_name": "PostToolUse", "tool_response": okResponse(), "error": nil}, ""},
+	} {
+		b, _ := json.Marshal(tc.fields)
+		got := notSucceeded(b)
+		if (tc.want == "") != (got == "") || !strings.Contains(got, tc.want) {
+			t.Errorf("%s: notSucceeded = %q, want it to mention %q", name, got, tc.want)
+		}
+	}
+	if got := notSucceeded([]byte("[1]")); got == "" {
+		t.Error("a payload that is not an object is no success")
+	}
+}
+
+// A payload with nothing to gate on says nothing: a hook that printed on every
+// Bash command would be noise.
+func TestAnUnrelatedCommandIsSilentEvenWithoutASession(t *testing.T) {
+	env, _ := gateFixture(t)
+	for _, cmd := range []string{"ls", "agentsync claim --wait 45m go-numerics/optimize"} {
+		_, _, stderr := ask(env, payload(t, "", "/work/opt", cmd))
+		if stderr != "" {
+			t.Errorf("%q: stderr %q, want none", cmd, stderr)
+		}
+	}
+}
+
+// ⛔ Measured 2026-11-22: a backgrounded ghrelease was judged a success the
+// instant it detached, then exited 1. Its status is not known, so nothing is
+// released; a foreground call (flag false) still is.
+func TestABackgroundedMergeReleasesNothing(t *testing.T) {
+	for flag, wantHeld := range map[bool]bool{true: true, false: false} {
+		env, s := gateFixture(t)
+		if _, err := s.Acquire("go-fleettools/docs", me, "", 45*time.Minute); err != nil {
+			t.Fatal(err)
+		}
+		postRaw(t, env, map[string]any{
+			"session_id": me, "cwd": "/work/opt", "hook_event_name": "PostToolUse",
+			"tool_input":    map[string]any{"command": "ghrelease go-fleettools/docs 44 v1.0.0", "run_in_background": flag},
+			"tool_response": okResponse(),
+		})
+		if holds(t, s, "go-fleettools/docs", me) != wantHeld {
+			t.Errorf("run_in_background=%v: lease held = %v, want %v", flag, !wantHeld, wantHeld)
+		}
+	}
+	b, _ := json.Marshal(map[string]any{
+		"hook_event_name": "PostToolUse", "tool_response": okResponse(),
+		"tool_input": map[string]any{"run_in_background": true},
+	})
+	if got := notSucceeded(b); !strings.Contains(got, "background") {
+		t.Errorf("notSucceeded = %q, want the background reason", got)
+	}
+}
+
+// A zero exit status, spelled out, still releases.
+func TestAnExplicitZeroExitStillReleases(t *testing.T) {
+	env, s := gateFixture(t)
+	if _, err := s.Acquire("go-fleettools/docs", me, "", 45*time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	postRaw(t, env, map[string]any{
+		"session_id": me, "cwd": "/work/opt", "hook_event_name": "PostToolUse",
+		"tool_input":    map[string]any{"command": "ghmerge go-fleettools/docs 44"},
+		"tool_response": map[string]any{"stdout": "ok", "exit_code": 0},
+	})
+	if holds(t, s, "go-fleettools/docs", me) {
+		t.Fatal("exit_code 0 did not release")
+	}
+}
+
+// ⛔ Measured 2026-11-22: a plain `ghrelease -h` released a lease. It exits 0, so
+// only the command line tells it from a release (publishesNothing).
+func TestHelpReleasesNothing(t *testing.T) {
+	for _, cmd := range []string{"ghrelease go-gitsafe/gitsafe -h", "ghrelease go-gitsafe/gitsafe --help", "ghmerge help", "ghrelease go-gitsafe/gitsafe --version"} {
+		env, s := gateFixture(t)
+		if _, err := s.Acquire("go-gitsafe/gitsafe", me, "", 45*time.Minute); err != nil {
+			t.Fatal(err)
+		}
+		post(t, env, me, "/work/opt", cmd)
+		if !holds(t, s, "go-gitsafe/gitsafe", me) {
+			t.Errorf("%q released a lease", cmd)
+		}
+	}
 }
 
 func holds(t *testing.T, s lease.Store, repo, who string) bool {
@@ -397,7 +541,8 @@ func TestGatePostFlagReleasesThroughTheEntryPoint(t *testing.T) {
 	}
 	b, _ := json.Marshal(map[string]any{
 		"session_id": me, "cwd": "/work/opt", "tool_name": "Bash",
-		"tool_input": map[string]any{"command": "ghmerge go-numerics/optimize 62"},
+		"tool_input":    map[string]any{"command": "ghmerge go-numerics/optimize 62"},
+		"tool_response": okResponse(),
 	})
 	r, w, err := os.Pipe()
 	if err != nil {

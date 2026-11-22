@@ -119,25 +119,14 @@ func publishesNothing(args []string) bool {
 //
 // Like the gate it never fails the command: what it cannot read, it leaves.
 //
-// ⛔⛔ THIS DOES NOT YET READ WHETHER THE COMMAND SUCCEEDED, AND IT MUST.
-// These lines used to assert the opposite -- "a command that has SUCCEEDED
-// (Claude Code runs this hook only for a tool call that did; a failure goes to
-// PostToolUseFailure)" -- and that sentence was wrong and cost a repository.
+// ⛔⛔ IT RELEASES ONLY WHEN THE COMMAND'S RESULT SAYS IT SUCCEEDED (notSucceeded).
 // Measured 2026-11-22: `ghmerge go-fleettools/docs 44` exited 1, printing
 // "GitHub refused this (403) reporting the core budget exhausted", and this hook
 // still announced "ghmerge succeeded, so the lease on go-fleettools/docs is
 // released"; afterwards `agentsync claims` showed no row for that repository and
-// the pull request was still open. A Bash tool call that runs a program exiting
-// non-zero is a tool call that WORKED -- it ran what it was asked to -- so
-// PostToolUse fires, and PostToolUseFailure is about the TOOL failing, not the
-// program. The command's status lives in the payload's tool_response, which the
-// struct below does not read.
-//
-// Not fixed here because the shape of tool_response for Bash has not been
-// measured, and a field name guessed from documentation would be a filter that
-// cannot tell "no answer" from "wrong query". Tracked as the issue filed on
-// 2026-11-22; publishesNothing above fixes the other half, the half that is
-// decidable from the command line.
+// the pull request was still open. The release followed the command's NAME.
+// publishesNothing covers the half decidable from the command line (-h, a dry
+// run); notSucceeded reads the payload for the rest.
 func gatePost(stdin io.Reader, out, errOut io.Writer, env gateEnv) {
 	var p struct {
 		SessionID string `json:"session_id"`
@@ -153,6 +142,10 @@ func gatePost(stdin io.Reader, out, errOut io.Writer, env gateEnv) {
 		return
 	}
 	if p.ToolName != "" && p.ToolName != "Bash" {
+		return
+	}
+	if why := notSucceeded(b); why != "" {
+		fmt.Fprintf(errOut, "agentsync gate --post: %s; releasing nothing\n", why)
 		return
 	}
 	env.owner = firstSet(env.override, p.SessionID, env.session)
@@ -186,6 +179,64 @@ func gatePost(stdin io.Reader, out, errOut io.Writer, env gateEnv) {
 			"additionalContext": strings.Join(said, "\n"),
 		},
 	})
+}
+
+// exitKeys are the names a Bash result could carry its exit status under. The
+// documented Bash tool_response has none (stdout, stderr, interrupted, isImage;
+// a non-zero status arrives as "Exit code N" in `error`, event
+// PostToolUseFailure), so these are read only if present: a status that is there
+// must be 0.
+var exitKeys = []string{"exit_code", "exitCode", "return_code", "returnCode"}
+
+// notSucceeded says why this PostToolUse payload does NOT show a command that ran
+// to a zero exit, or "" when it does. It decides from fields only, never from the
+// text of the output, and it fails closed: a payload that does not positively
+// look like a completed command is no success, because the cost of a lease kept
+// is an idle lease that is taken over after the idle limit, while the cost of a
+// lease released on a failure is a repository handed away mid-write.
+func notSucceeded(raw []byte) string {
+	var p map[string]json.RawMessage
+	if json.Unmarshal(raw, &p) != nil {
+		return "the payload is not an object"
+	}
+	var s string
+	if json.Unmarshal(p["hook_event_name"], &s) == nil && s == "PostToolUseFailure" {
+		return "the tool call failed (PostToolUseFailure)"
+	}
+	if e, ok := p["error"]; ok && string(e) != "null" && string(e) != `""` {
+		return "the payload carries an error"
+	}
+	var b bool
+	if json.Unmarshal(p["is_error"], &b) == nil && b {
+		return "the payload says is_error"
+	}
+	// A backgrounded command is reported the instant it detaches: its exit status
+	// does not exist yet, and it may fail seconds later (measured 2026-11-22, a
+	// backgrounded ghrelease judged "succeeded" and then exited 1).
+	var in map[string]json.RawMessage
+	if json.Unmarshal(p["tool_input"], &in) == nil && json.Unmarshal(in["run_in_background"], &b) == nil && b {
+		return "the command ran in the background, so its exit status is not known yet"
+	}
+	resp, ok := p["tool_response"]
+	if !ok || string(resp) == "null" {
+		return "the payload has no tool_response"
+	}
+	var r map[string]json.RawMessage
+	if json.Unmarshal(resp, &r) != nil {
+		return "tool_response is not an object (a failed call delivers its error text as a string)"
+	}
+	if json.Unmarshal(r["interrupted"], &b) == nil && b {
+		return "the command was interrupted"
+	}
+	for _, k := range exitKeys {
+		if v, ok := r[k]; ok {
+			var n float64
+			if json.Unmarshal(v, &n) != nil || n != 0 {
+				return "the command's exit status is not 0"
+			}
+		}
+	}
+	return ""
 }
 
 // mine returns this session's live leases that are about exactly this repository

@@ -13,7 +13,15 @@
   test could ever see it. `newFlags`/`parseFlags` return an `exitError` instead
   (2 for a bad flag, 0 for `-h`: what `ExitOnError` did) and `run()` turns it
   into the status, leaving `main()` one line. No behaviour changes.
-
+- `gate --hook` refuses `agentsync claim --wait` when the Bash call has
+  `run_in_background: true`: the wait outlives its turn and the lease is held by
+  nobody (lesson recurred 2026-11-22).
+- `gate --post` releases only when the payload shows a zero exit (fail closed):
+  PostToolUseFailure, `error`, `is_error`, a missing or string `tool_response`,
+  `interrupted`, a command run with `run_in_background` (its status is not
+  known when it detaches) and a non-zero `exit_code`/`exitCode` release nothing. The
+  payload documents no exit status, so a failure delivered as a success-shaped
+  object with none of those fields still releases.
 - **A test can no longer reach the shared claims directory.** `root()` panics
   under `go test` when `AGENTSYNC_DIR` is unset, instead of returning the path
   where every live session's leases are. It found two writers on its first run:
@@ -65,7 +73,6 @@
   is removed from the code comment and the README, because it is false: a `Bash`
   call running a program that exits non-zero is a tool call that worked. A
   `ghmerge` refused with a 403 released the lease on a merge that never happened.
-  Reading the payload's `tool_response` is still to do.
 
 ## v0.11.0
 

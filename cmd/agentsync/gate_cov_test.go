@@ -259,13 +259,12 @@ func TestGatePostSaysWhyItCouldNotNameARepositoryAndReleasesOnceEach(t *testing.
 		t.Fatal(err)
 	}
 	cmd := "ghmerge --repo=junk 1; ghmerge go-numerics/optimize 62; ghmerge go-numerics/optimize 63"
-	var out, errOut bytes.Buffer
-	gatePost(payload(t, me, "/work/opt", cmd), &out, &errOut, env)
-	if !strings.Contains(errOut.String(), `ghmerge: cannot read a repository from "junk"; releasing nothing`) {
-		t.Fatalf("the unreadable target is not reported: %q", errOut.String())
+	_, errOut := post(t, env, me, "/work/opt", cmd)
+	if !strings.Contains(errOut, `ghmerge: cannot read a repository from "junk"; releasing nothing`) {
+		t.Fatalf("the unreadable target is not reported: %q", errOut)
 	}
-	if n := strings.Count(errOut.String(), "is released."); n != 1 {
-		t.Fatalf("the repository must be released and announced once, got %d:\n%s", n, errOut.String())
+	if n := strings.Count(errOut, "is released."); n != 1 {
+		t.Fatalf("the repository must be released and announced once, got %d:\n%s", n, errOut)
 	}
 	if ls, _ := s.List(); len(ls) != 0 {
 		t.Fatalf("the lease survived: %v", ls)
