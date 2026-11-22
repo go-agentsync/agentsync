@@ -52,25 +52,67 @@ func envDuration(name string, def time.Duration) time.Duration {
 // middle of the job.
 var finishers = map[string]bool{"ghmerge": true, "ghrelease": true}
 
-func dryRun(args []string) bool {
+// publishesNothing reports whether this invocation cannot have published
+// anything, whatever its exit status: a dry run, or a request for help or for a
+// version.
+//
+// ⛔ Measured 2026-11-22: a plain `ghrelease -h` released this session's lease on
+// go-gitsafe/gitsafe, which then had to be re-taken with --keep-lease. A request
+// for help exits 0 and writes no release, so exit status alone can never
+// separate it from a release that worked -- which is why this is a predicate
+// over the command line and not a reading of the result.
+//
+// The dry-run case was already excluded here for exactly this reason; help and
+// version are the same reason and were missed because a dry run is something one
+// MEANS to do, while -h is something one types in the middle of reading.
+//
+// A bare `help` word counts too, since these are cobra commands and
+// `ghrelease help` is the same request. Over-excluding is the safe direction: it
+// keeps a lease that could have been released, which is the behaviour this gate
+// replaced, whereas under-excluding hands a repository to another session in the
+// middle of the work.
+func publishesNothing(args []string) bool {
 	for _, a := range args {
 		a = strings.TrimLeft(a, "-")
-		if a == "dry-run" || strings.HasPrefix(a, "dry-run=") {
+		switch a {
+		case "dry-run", "h", "help", "version":
+			return true
+		}
+		if strings.HasPrefix(a, "dry-run=") {
 			return true
 		}
 	}
 	return false
 }
 
-// gatePost answers one PostToolUse payload: a command that has SUCCEEDED (Claude
-// Code runs this hook only for a tool call that did; a failure goes to
-// PostToolUseFailure) and that finished the work releases the holder's lease
-// unless the holder claimed it with --keep-lease and a reason.
+// gatePost answers one PostToolUse payload: an invocation that finished the work
+// releases the holder's lease unless the holder claimed it with --keep-lease and
+// a reason.
 //
 // It exists because a note told every session to release and none reliably did
 // (agentsync#33, six occurrences): the release is the tool's job now.
 //
 // Like the gate it never fails the command: what it cannot read, it leaves.
+//
+// ⛔⛔ THIS DOES NOT YET READ WHETHER THE COMMAND SUCCEEDED, AND IT MUST.
+// These lines used to assert the opposite -- "a command that has SUCCEEDED
+// (Claude Code runs this hook only for a tool call that did; a failure goes to
+// PostToolUseFailure)" -- and that sentence was wrong and cost a repository.
+// Measured 2026-11-22: `ghmerge go-fleettools/docs 44` exited 1, printing
+// "GitHub refused this (403) reporting the core budget exhausted", and this hook
+// still announced "ghmerge succeeded, so the lease on go-fleettools/docs is
+// released"; afterwards `agentsync claims` showed no row for that repository and
+// the pull request was still open. A Bash tool call that runs a program exiting
+// non-zero is a tool call that WORKED -- it ran what it was asked to -- so
+// PostToolUse fires, and PostToolUseFailure is about the TOOL failing, not the
+// program. The command's status lives in the payload's tool_response, which the
+// struct below does not read.
+//
+// Not fixed here because the shape of tool_response for Bash has not been
+// measured, and a field name guessed from documentation would be a filter that
+// cannot tell "no answer" from "wrong query". Tracked as the issue filed on
+// 2026-11-22; publishesNothing above fixes the other half, the half that is
+// decidable from the command line.
 func gatePost(stdin io.Reader, out, errOut io.Writer, env gateEnv) {
 	var p struct {
 		SessionID string `json:"session_id"`
@@ -93,7 +135,7 @@ func gatePost(stdin io.Reader, out, errOut io.Writer, env gateEnv) {
 	var said []string
 	seen := map[string]bool{}
 	for _, inv := range invocations(p.ToolInput.Command, p.Cwd, env.home) {
-		if !finishers[inv.prog] || dryRun(inv.args) {
+		if !finishers[inv.prog] || publishesNothing(inv.args) {
 			continue
 		}
 		repo, err := env.target(inv)

@@ -74,9 +74,9 @@ nothing for that, so a note saying "release when done" failed six times
 quota, and a background `claim --wait` that outlived the run that asked for it.
 Each is now a tool's job:
 
-- **A succeeded `ghmerge` or `ghrelease` releases the holder's lease** on that
+- **A `ghmerge` or `ghrelease` releases the holder's lease** on that
   repository (not `gitpush` or `ghpr`: the merge still follows). It is the
-  PostToolUse hook, which Claude Code runs only for a command that succeeded:
+  PostToolUse hook:
 
       {"hooks": {"PostToolUse": [{"matcher": "Bash",
         "hooks": [{"type": "command", "command": "agentsync gate --post"}]}]}}
@@ -85,6 +85,20 @@ Each is now a tool's job:
   `agentsync claim --keep-lease "ghrelease follows the merge" o/r`. The reason is
   stored, shown in `claims`, and printed when the merge leaves the lease alone.
   Only the exact repository's lease is released, never an organisation claim.
+
+  An invocation that cannot have published anything is skipped whatever its exit
+  status: `--dry-run`, and `-h`, `--help`, `help` or `--version`. Measured
+  2026-11-22, a plain `ghrelease -h` released a lease, because help exits 0 and
+  writes no release, so no reading of the status could have told them apart.
+
+  ⛔ **This does not yet read whether the command itself succeeded.** These lines
+  used to say the hook "Claude Code runs only for a command that succeeded", and
+  that was wrong: a `Bash` call running a program that exits non-zero is a tool
+  call that worked, so PostToolUse fires and PostToolUseFailure does not.
+  Measured the same day, a `ghmerge` refused with a 403 for an exhausted API
+  budget exited 1 and the lease was released anyway, on a merge that never
+  happened. Until that is read from the payload's `tool_response`, check the exit
+  status and `agentsync claims` after a merge rather than the hook's message.
 - **A lease idle for 15 minutes may be taken.** Idle means no claim, renewal or
   publish by the holder (an allowed gated command counts). The default is 15
   minutes because a CI run, a quota reset or a load wait costs the queue far more

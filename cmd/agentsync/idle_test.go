@@ -64,6 +64,10 @@ func TestOnlyPublishesThatFinishTheWorkRelease(t *testing.T) {
 		"gitpush -u origin topic", // the PR and the merge still follow
 		"ghpr go-numerics/optimize 62 ready",
 		"ghmerge go-numerics/optimize 62 --dry-run",
+		// --dry-run=true as well as the bare flag: the value spelling is a
+		// separate branch in publishesNothing, and mutsweep found that nothing
+		// held it -- deleting that branch kept the whole suite green.
+		"ghmerge go-numerics/optimize 62 --dry-run=true",
 		"git status",
 	} {
 		env, s := gateFixture(t)
@@ -73,6 +77,42 @@ func TestOnlyPublishesThatFinishTheWorkRelease(t *testing.T) {
 		post(t, env, me, "/work/opt", cmd)
 		if !holds(t, s, "go-numerics/optimize", me) {
 			t.Errorf("%q released a lease it should not have", cmd)
+		}
+	}
+}
+
+// ⛔ Measured 2026-11-22: a plain `ghrelease -h` released this session's lease on
+// go-gitsafe/gitsafe, which then had to be re-taken with --keep-lease.
+//
+// It is its own test rather than another row of the table above because it is
+// the one case that no reading of the exit status could ever catch: help EXITS
+// 0 and publishes nothing, so only the command line separates it from a release
+// that worked. The dry-run row above was already there for the same reason,
+// which is what makes this a gap in that reasoning and not a new idea.
+//
+// It also asserts SILENCE. A message naming a lease is what a session believes:
+// one that says "released" about a lease still held is as harmful as releasing
+// it, because the holder stops renewing.
+func TestAskingForHelpOrAVersionIsNotPublishing(t *testing.T) {
+	for _, cmd := range []string{
+		"ghrelease -h",
+		"ghrelease --help",
+		"ghrelease help",
+		"ghmerge -h",
+		"ghmerge --help",
+		"ghmerge --version",
+		"cd /work/opt && ghmerge -h",
+	} {
+		env, s := gateFixture(t)
+		if _, err := s.Acquire("go-numerics/optimize", me, "", 45*time.Minute); err != nil {
+			t.Fatal(err)
+		}
+		_, errOut := post(t, env, me, "/work/opt", cmd)
+		if !holds(t, s, "go-numerics/optimize", me) {
+			t.Errorf("%q released the lease; asking for help publishes nothing", cmd)
+		}
+		if errOut != "" {
+			t.Errorf("%q said %q; it must say nothing at all", cmd, errOut)
 		}
 	}
 }
