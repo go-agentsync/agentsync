@@ -58,6 +58,17 @@
   that `githuB.Com/ 0` normalizes to ` 0` and a second pass to `0`: the gate
   normalizes a repository and the store normalizes it again, so one name could
   reach two keys. It now repeats until the key stops moving.
+- **An empty `tool_response` released a lease**, and the corpus above is how it
+  was found. `notSucceeded` (v0.12.0) fails closed on a refused `403`, a non-zero
+  exit, an interruption, a missing response and a null one — five of the six
+  shapes `FuzzGatePost` seeds — but `"tool_response":{}` still read as a success.
+  The v0.12.0 entry recorded that as accepted ("a failure delivered as a
+  success-shaped object with none of those fields still releases"); it is a
+  defect, because an object with no fields is the same absence as no object, and
+  every completed Bash call carries at least one of `stdout`, `stderr`,
+  `interrupted` or `isImage`. The check counts fields rather than requiring
+  `stdout` by name, so a harness that renames one keeps releasing leases instead
+  of holding every one of them forever.
 - **A test can no longer reach the shared claims directory.** `root()` panics
   under `go test` when `AGENTSYNC_DIR` is unset, instead of returning the path
   where every live session's leases are. It found two writers on its first run:

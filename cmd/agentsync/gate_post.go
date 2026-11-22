@@ -225,6 +225,16 @@ func notSucceeded(raw []byte) string {
 	if json.Unmarshal(resp, &r) != nil {
 		return "tool_response is not an object (a failed call delivers its error text as a string)"
 	}
+	// ⛔ An object with NO fields is the same absence as a missing tool_response,
+	// and it reached this far: found by FuzzGatePost's ghmerge-empty-response seed
+	// against v0.12.0, the one of its five seeds the notSucceeded fix left open.
+	// Every completed Bash call carries at least one of stdout/stderr/interrupted/
+	// isImage, so `{}` evidences nothing -- and this stays a count rather than a
+	// required key name, because requiring `stdout` would turn a harness that
+	// renames a field into a lease that is never released again.
+	if len(r) == 0 {
+		return "tool_response is an empty object, which evidences no completed command"
+	}
 	if json.Unmarshal(r["interrupted"], &b) == nil && b {
 		return "the command was interrupted"
 	}
