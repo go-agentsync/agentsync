@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("{\"session_id\":\"11111111-aaaa-bbbb-cccc-000000000001\",\"cwd\":\"/work/opt\",\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"ghmerge o/r 62\"}}")

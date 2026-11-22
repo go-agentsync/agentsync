@@ -120,7 +120,25 @@ var forgeHosts = map[string]bool{
 // A URL, an SSH remote and a bare owner/repo all come to the same key, and case
 // is not part of the identity: GitHub itself treats owner and repository names
 // case-insensitively.
+//
+// ⛔ IT RUNS TO A FIXED POINT. The gate normalizes a repository once (ownerRepo)
+// and the store normalizes it again (Covering, path), so a key that one pass
+// moved and a second pass moved again named two different resources depending
+// on how many callers it went through. FuzzNormalizePath found it on its first
+// run: "githuB.Com/ 0" -> " 0" -> "0". Every step only shortens its input or
+// leaves it (lower-casing is idempotent), so the loop ends.
 func Normalize(resource string) string {
+	s := normalizeOnce(resource)
+	for {
+		next := normalizeOnce(s)
+		if next == s {
+			return s
+		}
+		s = next
+	}
+}
+
+func normalizeOnce(resource string) string {
 	s := strings.TrimSpace(resource)
 	for _, scheme := range []string{"https://", "http://", "ssh://", "git://"} {
 		s = strings.TrimPrefix(s, scheme)

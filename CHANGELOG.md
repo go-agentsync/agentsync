@@ -40,6 +40,24 @@
   known when it detaches) and a non-zero `exit_code`/`exitCode` release nothing. The
   payload documents no exit status, so a failure delivered as a success-shaped
   object with none of those fields still releases.
+- **Fuzz targets and a committed seed corpus for every parser of input this
+  program does not write.** Nine targets (`FuzzParseLease`, `FuzzParseTells`,
+  `FuzzParseTakes`, `FuzzNormalizePath`, `FuzzParseRecords`, `FuzzGateHook`,
+  `FuzzGateHookPayload`, `FuzzGatePost`, `FuzzGatePostPayload`), seeds under
+  `testdata/fuzz/<Target>/` in the layout `go-agentsync/agentscope` uses, and a
+  `fuzz` CI lane of 20 s per target. The gate targets assert what the gate is
+  for (a publish into an unheld repository is denied; only a finishing command
+  releases a lease), not that it survives. `FuzzGatePost` asserts the strict
+  property — no release without evidence of success — unconditionally. It was
+  written behind a `postsuccess` build tag because it was red on five seeds (a
+  refused `403`, a non-zero exit, an interrupted run, an empty result, a null
+  result), each of which released a lease; the tag is gone now that v0.12.0
+  carries the `notSucceeded` fix those seeds measured, so the five are a
+  permanent assertion rather than a record of a defect.
+- **`Normalize` is a fixed point.** `FuzzNormalizePath` found, on its first run,
+  that `githuB.Com/ 0` normalizes to ` 0` and a second pass to `0`: the gate
+  normalizes a repository and the store normalizes it again, so one name could
+  reach two keys. It now repeats until the key stops moving.
 - **A test can no longer reach the shared claims directory.** `root()` panics
   under `go test` when `AGENTSYNC_DIR` is unset, instead of returning the path
   where every live session's leases are. It found two writers on its first run:

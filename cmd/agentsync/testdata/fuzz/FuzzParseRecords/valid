@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("[{\"name\":\"a\",\"line\":\"l\",\"index\":\"i\",\"added\":\"2026-11-22T20:00:00Z\"}]")
