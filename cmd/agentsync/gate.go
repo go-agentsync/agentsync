@@ -74,15 +74,23 @@ type gateEnv struct {
 	// URL a push goes to; name "" asks for the remote a push goes to by default.
 	remote func(dir, name string, push bool) (string, error)
 	home   string
+	// idle is the store's idle limit, so a refusal can say the holder is idle.
+	idle time.Duration
 }
 
 func gate(args []string) error {
 	fs := flag.NewFlagSet("gate", flag.ExitOnError)
 	hook := fs.Bool("hook", false, "read a PreToolUse payload on stdin and answer it")
+	postHook := fs.Bool("post", false, "read a PostToolUse payload on stdin; a succeeded ghmerge/ghrelease releases the holder's lease")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	env := gateEnv{store: store(), now: time.Now, remote: gitRemote, home: home()}
+	env := gateEnv{store: store(), now: time.Now, remote: gitRemote, home: home(), idle: idleLimit()}
+	if *postHook {
+		env.override, env.session = os.Getenv("AGENTSYNC_OWNER"), os.Getenv("CLAUDE_CODE_SESSION_ID")
+		gatePost(os.Stdin, os.Stdout, os.Stderr, env)
+		return nil
+	}
 	if *hook {
 		env.override, env.session = os.Getenv("AGENTSYNC_OWNER"), os.Getenv("CLAUDE_CODE_SESSION_ID")
 		gateHook(os.Stdin, os.Stdout, os.Stderr, env)
@@ -170,6 +178,9 @@ func gateHook(stdin io.Reader, out, errOut io.Writer, env gateEnv) {
 			})
 			return
 		}
+		// Allowed: the holder is publishing, which is the activity that keeps its
+		// lease from reading as idle.
+		env.touch(repo, errOut)
 	}
 	if len(notice) > 0 {
 		for _, n := range notice {
@@ -277,6 +288,11 @@ func (g gateEnv) decide(repo string, errOut io.Writer) string {
 		note := ""
 		if other.Note != "" {
 			note = fmt.Sprintf(" (%q)", other.Note)
+		}
+		if other.Idle(now, g.idle) {
+			return fmt.Sprintf("agentsync: %s is claimed by %s%s, but the holder is idle %dm (limit %s): it is waiting, not working.\n"+
+				"Take it: agentsync claim --note \"<what>\" %s -- the holder is told, and then retry.",
+				repo, short(other.Owner), note, int(now.Sub(other.LastActive())/time.Minute), g.idle, repo)
 		}
 		return fmt.Sprintf("agentsync: %s is claimed by another session, %s, until %s%s.\n"+
 			"This command publishes into it. Leave it to the holder, send them a message (agentsync tell %s ...), "+

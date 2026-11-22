@@ -39,6 +39,33 @@ type Lease struct {
 	Note     string    `json:"note,omitempty"`
 	Acquired time.Time `json:"acquired"`
 	Expires  time.Time `json:"expires"`
+	// Active is the last moment the holder DID something with the lease: claimed,
+	// renewed it, or published into the resource. Absent in a lease written by an
+	// older agentsync, which reads as Acquired.
+	Active time.Time `json:"active,omitempty"`
+	// Keep is the reason the holder wants the lease to survive a successful
+	// publish. Without it a ghmerge/ghrelease that succeeds releases the lease.
+	Keep string `json:"keep,omitempty"`
+}
+
+// LastActive is when the holder last acted on the lease.
+func (l Lease) LastActive() time.Time {
+	if l.Active.IsZero() {
+		return l.Acquired
+	}
+	return l.Active
+}
+
+// Idle reports whether the holder has done nothing with the lease for at least
+// threshold. A zero or negative threshold disables the test.
+func (l Lease) Idle(now time.Time, threshold time.Duration) bool {
+	return threshold > 0 && now.Sub(l.LastActive()) >= threshold
+}
+
+// Takeable reports whether another session may take the lease: its deadline has
+// passed, or its holder has been idle for at least idle.
+func (l Lease) Takeable(now time.Time, idle time.Duration) bool {
+	return l.Expired(now) || l.Idle(now, idle)
 }
 
 // Expired reports whether the lease may be taken from its holder.
@@ -57,6 +84,9 @@ func (e *Held) Error() string {
 type Store struct {
 	Dir string
 	Now func() time.Time // injectable so the tests do not sleep
+	// Idle is how long a holder may do nothing before another session may take
+	// the lease. Zero disables it: a lease then lasts to its deadline.
+	Idle time.Duration
 }
 
 func (s Store) now() time.Time {
@@ -185,7 +215,7 @@ func (s Store) overlapping(target, key, owner string, now time.Time) *Lease {
 			continue // a torn file is not a holder
 		}
 		k := Normalize(l.Resource)
-		if l.Owner == owner || l.Expired(now) {
+		if l.Owner == owner || l.Takeable(now, s.Idle) {
 			continue
 		}
 		if covers(k, key) || covers(key, k) || bareNames(k, key) || bareNames(key, k) {
@@ -219,14 +249,25 @@ func (s Store) path(resource string) string {
 //
 // A lease whose deadline has passed is taken over rather than respected: the
 // alternative is that one dead session blocks a resource until a human notices.
+//
+// A lease whose holder has been idle for Store.Idle is taken over the same way:
+// the deadline says how long the holder MAY hold it, the activity says whether
+// anyone is using it, and a holder that is only waiting (on CI, on load, on a
+// quota) is not.
 func (s Store) Acquire(resource, owner, note string, ttl time.Duration) (Lease, error) {
+	return s.AcquireKeep(resource, owner, note, "", ttl)
+}
+
+// AcquireKeep is Acquire with a reason the lease should survive a successful
+// publish (see ReleaseUnlessKept).
+func (s Store) AcquireKeep(resource, owner, note, keep string, ttl time.Duration) (Lease, error) {
 	if err := os.MkdirAll(s.Dir, 0o755); err != nil {
 		return Lease{}, err
 	}
 	now := s.now()
 	l := Lease{
 		Resource: resource, Owner: owner, PID: os.Getpid(), Note: note,
-		Acquired: now, Expires: now.Add(ttl),
+		Acquired: now, Expires: now.Add(ttl), Active: now, Keep: keep,
 	}
 	body, err := json.MarshalIndent(l, "", "  ")
 	if err != nil {
@@ -245,25 +286,16 @@ func (s Store) Acquire(resource, owner, note string, ttl time.Duration) (Lease, 
 		if !errors.Is(err, os.ErrExist) {
 			return Lease{}, err
 		}
-		// Someone holds it. Take over only if their deadline has passed.
-		cur, rerr := s.read(p)
-		if rerr != nil {
-			// Unreadable or half-written: treat as stale rather than wedge
-			// forever on a corrupt file.
-			if rmErr := os.Remove(p); rmErr != nil {
-				return Lease{}, rmErr
-			}
-			continue
-		}
-		if cur.Owner == owner {
-			// Re-entrant: extend our own rather than fail.
-			return s.write(p, l)
-		}
-		if !cur.Expired(now) {
-			return Lease{}, &Held{By: cur}
-		}
-		if err := os.Remove(p); err != nil && !errors.Is(err, os.ErrNotExist) {
+		// Someone holds it. Take over only if their deadline has passed or they
+		// have gone idle -- decided UNDER THE FILE'S LOCK, because the decision
+		// (read, judge, remove, create) is four steps and a holder renewing between
+		// the read and the remove would otherwise lose a lease it had just renewed.
+		got, done, err := s.takeOver(p, l, owner, now)
+		if err != nil {
 			return Lease{}, err
+		}
+		if done {
+			return got, nil
 		}
 	}
 	return Lease{}, fmt.Errorf("lease: %s: lost the race twice", resource)
@@ -345,6 +377,11 @@ func (s Store) read(p string) (Lease, error) {
 // message that cannot fail is indistinguishable from one that did nothing.
 func (s Store) Release(resource, owner string) (bool, error) {
 	p := s.path(resource)
+	unlock, err := s.lock(p)
+	if err != nil {
+		return false, err
+	}
+	defer unlock()
 	cur, err := s.read(p)
 	if errors.Is(err, os.ErrNotExist) {
 		return false, nil
