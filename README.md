@@ -346,6 +346,46 @@ sessions that ask, and cannot stop one that does not. That is precisely why
 `mem-verify` repairs rather than trusts, and why a lease expires rather than
 waiting for a release that a dead session will never send.
 
+## `.` is the worst resource name there is
+
+It reads as "here" and behaves as **one global lock**. Every session's `.` is a
+different directory, so two sessions in unrelated checkouts both hold it and
+believe they have coordinated, while a third reads `claims`, sees a holder on
+`.`, and learns nothing about which repository is taken.
+
+Measured 2026-11-22, both live the same day: `.` held by one session until
+20:02, and `..` written into the store at 14:54. `.`, `..`, an absolute path and
+a `~/`-path are now **dropped and named**, like a misplaced flag or a sentence —
+the repository beside the mistake is still claimed — and the reason says what to
+write instead. ⛔ A name without a slash stays valid: `mesocentre-deploy` and
+`go-authn-authnd-secretfrom` are how worktree topics are claimed here, so this
+is not "a resource needs a slash", and the test pins those rows as the control.
+
+## A test must not coordinate with two dozen live sessions
+
+The claims directory is real shared state: `~/.claude/agentsync`, read by every
+session before it decides where to work. A test that reaches it writes leases
+other sessions obey.
+
+Every test here sets `AGENTSYNC_DIR` to a `t.TempDir()`, and for a long time
+nothing **made** them. Two writers were found on 2026-11-22:
+
+- the fold tests sandboxed the memory index, stopped there, and took a real
+  lease through `memFold` → `withIndexLease` → `store()` — for as long as the
+  fold has existed;
+- `o/r`, live in the shared store, held by `11111111` with
+  `TestClaimKeepLeaseAndClaimsShowIt`'s literal keep-lease reason: a clone older
+  than `2db6442`, where that test was not yet sandboxed, still being tested on
+  this machine.
+
+So `root()` **panics** under `go test` when `AGENTSYNC_DIR` is unset, rather
+than returning the default path. ⛔ A helper that must be *called* protects only
+the tests that remember to call it; the fix for the second writer was already in
+`main` and did not stop it. A panic, not a quiet fallback, because the stack
+trace names the test, and the failure is unmissable. `go build` keeps the
+default — `testing.Testing()` is false there, and the binary grows 16,848 bytes
+(+0.34%), measured.
+
 ## Layout
 
     lease/          the expiring advisory lock, with its tests

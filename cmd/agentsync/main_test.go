@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -236,6 +237,39 @@ func TestASentenceStandingAloneIsNamedAsANote(t *testing.T) {
 	_, rejected := sift([]string{"adding Tray.SetTitle: text alongside icon"})
 	if len(rejected) != 1 || !strings.Contains(rejected[0].why, "note") {
 		t.Errorf("rejected = %+v", rejected)
+	}
+}
+
+// ⛔⛔ "." NAMES WHERE YOU ARE STANDING AND NOTHING ELSE SEES THE SAME PLACE.
+//
+// Measured 2026-11-22, both live in the shared store on the same day: `.` held
+// by 84a9d912 until 20:02, and `..lease` written at 14:54. A lease on "."
+// is one global lock that every session's working directory maps onto, so two
+// sessions in unrelated checkouts hold it and believe they have coordinated,
+// while a third reads `claims`, sees a holder on ".", and learns nothing.
+//
+// The control is the row that must survive: a repository name with no slash --
+// mesocentre-deploy, go-authn-authnd-secretfrom -- is how worktree topics are
+// claimed here, so this must not become "a resource needs a slash".
+func TestADirectoryIsNotAResource(t *testing.T) {
+	for _, arg := range []string{".", "..", "/Users/u/Documents/VCS/GIT/localhost/go-tex-engine", "~/clone"} {
+		resources, rejected := sift([]string{"go-pdfkit/ops", arg})
+		if len(resources) != 1 || resources[0] != "go-pdfkit/ops" {
+			t.Errorf("sift(%q): resources = %q, want the repository kept", arg, resources)
+		}
+		if len(rejected) != 1 || !strings.Contains(rejected[0].why, "directory") {
+			t.Errorf("sift(%q): rejected = %+v", arg, rejected)
+		}
+		if len(rejected) == 1 && !strings.Contains(rejected[0].why, "name the repository") {
+			t.Errorf("sift(%q): the reason does not say what to write instead: %q", arg, rejected[0].why)
+		}
+	}
+	// ⛔ The control. These are real resources on this machine.
+	for _, arg := range []string{"mesocentre-deploy", "go-authn-authnd-secretfrom", "go-pdfkit/ops", "deadbeef", "a.b"} {
+		resources, rejected := sift([]string{arg})
+		if len(resources) != 1 || len(rejected) != 0 {
+			t.Errorf("sift(%q) dropped a real resource: %q, %+v", arg, resources, rejected)
+		}
 	}
 }
 
@@ -605,5 +639,44 @@ func TestASessionIdCannotBeAGlob(t *testing.T) {
 		if _, err := sessionProjectDir(projects, id); err == nil {
 			t.Errorf("%q was accepted as a session id", id)
 		}
+	}
+}
+
+// ⛔⛔ A TEST THAT COORDINATES WITH TWO DOZEN LIVE SESSIONS IS THE FAILURE.
+//
+// Every test here sandboxes the claims directory, and nothing made them: the
+// fold tests sandboxed the memory index, stopped there, and took real leases in
+// ~/.claude/agentsync for as long as the fold has existed. A second writer was
+// visible in the shared store the same day -- `o/r` held by `11111111`, the
+// fixture owner, with TestClaimKeepLeaseAndClaimsShowIt's literal keep-lease
+// reason -- written by a clone older than 2db6442, where that test was not yet
+// sandboxed. A helper that must be CALLED protects only those who call it.
+//
+// So the default path is refused under `go test`. This test is the gate's own
+// witness: it asserts the refusal, and then asserts the control, because a
+// refusal that fires for every input would break `go build` behaviour without
+// anyone noticing which half was wrong.
+func TestATestCannotReachTheSharedClaimsDirectory(t *testing.T) {
+	t.Setenv("AGENTSYNC_DIR", "")
+	func() {
+		defer func() {
+			r := recover()
+			if r == nil {
+				t.Fatal("root() returned the shared claims directory to a test; " +
+					"a lease written there is read by every live session")
+			}
+			if msg := fmt.Sprint(r); !strings.Contains(msg, "AGENTSYNC_DIR") {
+				t.Errorf("the panic does not say how to fix it: %q", msg)
+			}
+		}()
+		t.Errorf("root() = %q, want a panic", root())
+	}()
+
+	// The control: a sandboxed test gets its directory, with no panic. Without
+	// this half, a refusal with its condition inverted would still pass above.
+	dir := t.TempDir()
+	t.Setenv("AGENTSYNC_DIR", dir)
+	if got := root(); got != dir {
+		t.Errorf("root() = %q, want %q", got, dir)
 	}
 }

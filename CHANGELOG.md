@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- **A test can no longer reach the shared claims directory.** `root()` panics
+  under `go test` when `AGENTSYNC_DIR` is unset, instead of returning the path
+  where every live session's leases are. It found two writers on its first run:
+  the fold tests, which sandboxed the memory index and then took real leases
+  through `withIndexLease`, and — in the shared store itself — `o/r` held by
+  `11111111`, a test's fixture owner, written by a clone older than 2db6442.
+  `go build` keeps the default path; the binary grows 16,848 bytes (+0.34%).
+- **`.`, `..` and a path are no longer claimed as resources.** `claim .` took a
+  lease on the literal string `.`, which every session's working directory maps
+  onto: one global lock that two sessions in unrelated checkouts both hold while
+  believing they have coordinated, and that tells a third nothing. Measured
+  2026-11-22, both live the same day: `.` held until 20:02, and `..` written at
+  14:54. Dropped and named like the other non-resources, so the repository
+  beside the mistake is still claimed, and the reason says to name the
+  repository as `git remote -v` spells it. A name without a slash stays valid —
+  worktree topics are claimed that way here.
 - `tell` refuses a resource that is a **session id** — `short()`'s eight hex
   characters, or a raw UUID — because a message left on one opens a queue nobody
   will ever claim. The refusal names what that session holds, so the message has
