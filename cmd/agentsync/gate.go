@@ -258,13 +258,13 @@ func trackerWrite(inv invocation) bool {
 
 // holder is the live claim of ANOTHER session covering repo, or nil.
 func (g gateEnv) holder(repo string) *lease.Lease {
-	if info, err := os.Stat(g.store.Dir); err != nil || !info.IsDir() {
-		return nil
-	}
-	ls, err := g.store.Covering(repo)
-	if err != nil {
-		return nil
-	}
+	// Covering answers a list only when it read every lease, and nil with an
+	// error for a missing directory, a file where the directory should be and a
+	// torn lease alike. Nobody known to hold is the right answer to all three
+	// (a refusal is not a verdict), so the error is not asked for twice: a
+	// Stat before it and an `if err` after it each survived a mutation sweep,
+	// because deleting either left Covering's answer to say the same.
+	ls, _ := g.store.Covering(repo)
 	now := g.now()
 	for i := range ls {
 		if !ls[i].Expired(now) && ls[i].Owner != g.owner {
