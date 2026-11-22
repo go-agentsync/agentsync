@@ -89,9 +89,7 @@ func gatePost(stdin io.Reader, out, errOut io.Writer, env gateEnv) {
 		return
 	}
 	env.owner = firstSet(env.override, p.SessionID, env.session)
-	if env.owner == "" {
-		return
-	}
+	// No owner at all matches no lease: an ownerless lease reads as torn.
 	var said []string
 	seen := map[string]bool{}
 	for _, inv := range invocations(p.ToolInput.Command, p.Cwd, env.home) {
@@ -127,13 +125,9 @@ func gatePost(stdin io.Reader, out, errOut io.Writer, env gateEnv) {
 // -- its own, or the bare-name spelling of it -- and not the organisation
 // around it, which one merge says nothing about.
 func (g gateEnv) mine(repo string) []lease.Lease {
-	if info, err := os.Stat(g.store.Dir); err != nil || !info.IsDir() {
-		return nil
-	}
-	ls, err := g.store.Covering(repo)
-	if err != nil {
-		return nil
-	}
+	// A missing or unreadable claims directory, or a torn lease in it, comes back
+	// as an error with no leases: nothing is this session's, so nothing is released.
+	ls, _ := g.store.Covering(repo)
 	key := lease.Normalize(repo)
 	bare := key[strings.LastIndex(key, "/")+1:]
 	var out []lease.Lease
@@ -182,6 +176,10 @@ func (g gateEnv) touch(repo string, errOut io.Writer) {
 	}
 }
 
+// statFile is os.Stat; a test replaces it, because the transcript vanishing
+// between the lookup that found it and the stat cannot be provoked on demand.
+var statFile = os.Stat
+
 // sessionGone says why a session that asked for a wait no longer wants it, or
 // nil. A session is gone when its transcript has not been written for longer
 // than grace. Anything that cannot be read -- no session id, no transcript, an
@@ -192,7 +190,7 @@ func sessionGone(projects, sessionID string, now func() time.Time, grace time.Du
 	if err != nil {
 		return nil
 	}
-	info, err := os.Stat(filepath.Join(dir, sessionID+".jsonl"))
+	info, err := statFile(filepath.Join(dir, sessionID+".jsonl"))
 	if err != nil {
 		return nil
 	}

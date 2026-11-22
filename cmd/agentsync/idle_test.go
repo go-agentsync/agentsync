@@ -249,3 +249,131 @@ func TestClaimKeepLeaseAndClaimsShowIt(t *testing.T) {
 		t.Errorf("AGENTSYNC_IDLE=0 gave %v", got)
 	}
 }
+
+// A payload for any tool but Bash says nothing about a merge, whatever its
+// input happens to contain.
+func TestAPostPayloadForAnotherToolReleasesNothing(t *testing.T) {
+	env, s := gateFixture(t)
+	if _, err := s.Acquire("go-numerics/optimize", me, "", 45*time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := json.Marshal(map[string]any{
+		"session_id": me, "cwd": "/work/opt", "tool_name": "Edit",
+		"tool_input": map[string]any{"command": "ghmerge go-numerics/optimize 62"},
+	})
+	var o, e bytes.Buffer
+	gatePost(bytes.NewReader(b), &o, &e, env)
+	if !holds(t, s, "go-numerics/optimize", me) {
+		t.Fatal("a non-Bash tool released a lease")
+	}
+}
+
+// Nobody to attribute the publish to: nothing is released.
+func TestAPostWithNoSessionReleasesNothing(t *testing.T) {
+	env, s := gateFixture(t)
+	if _, err := s.Acquire("go-numerics/optimize", them, "", 45*time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	post(t, env, "", "/work/opt", "ghmerge go-numerics/optimize 62")
+	if !holds(t, s, "go-numerics/optimize", them) {
+		t.Fatal("an ownerless post released a lease")
+	}
+}
+
+// A merge with nothing to release prints nothing: no empty hook answer.
+func TestAPostWithNothingToSayIsSilent(t *testing.T) {
+	env, _ := gateFixture(t)
+	out, errOut := post(t, env, me, "/work/opt", "ghmerge go-numerics/optimize 62")
+	if out != "" || errOut != "" {
+		t.Fatalf("out=%q err=%q, want both empty", out, errOut)
+	}
+}
+
+func TestTheKeptMessageNamesTheIdleLimit(t *testing.T) {
+	for _, tc := range []struct {
+		idle time.Duration
+		want string
+	}{{0, "its deadline"}, {15 * time.Minute, "15m0s"}} {
+		env, s := gateFixture(t)
+		env.idle = tc.idle
+		if _, err := s.AcquireKeep("go-numerics/optimize", me, "", "why", 45*time.Minute); err != nil {
+			t.Fatal(err)
+		}
+		_, errOut := post(t, env, me, "/work/opt", "ghmerge go-numerics/optimize 62")
+		if !strings.Contains(errOut, "goes idle after "+tc.want) {
+			t.Errorf("idle %v: %q", tc.idle, errOut)
+		}
+	}
+}
+
+// A session id that finds no transcript is not gone, even when a file of that
+// name sits in the working directory, where a missing directory would point.
+func TestSessionGoneNeverReadsTheWorkingDirectory(t *testing.T) {
+	const sid = "55555555-aaaa-bbbb-cccc-000000000005"
+	work := t.TempDir()
+	tr := filepath.Join(work, sid+".jsonl")
+	if err := os.WriteFile(tr, []byte("{}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().Add(-time.Hour)
+	if err := os.Chtimes(tr, old, old); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(work)
+	if err := sessionGone(t.TempDir(), sid, time.Now, time.Minute); err != nil {
+		t.Fatalf("no transcript under projects, yet gone: %v", err)
+	}
+}
+
+func TestSessionGoneWhenTheTranscriptVanishes(t *testing.T) {
+	projects := t.TempDir()
+	dir := filepath.Join(projects, "-p")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	const sid = "66666666-aaaa-bbbb-cccc-000000000006"
+	if err := os.WriteFile(filepath.Join(dir, sid+".jsonl"), []byte("{}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	old := statFile
+	statFile = func(string) (os.FileInfo, error) { return nil, os.ErrNotExist }
+	t.Cleanup(func() { statFile = old })
+	if err := sessionGone(projects, sid, time.Now, time.Minute); err != nil {
+		t.Fatalf("an unreadable transcript is not a verdict: %v", err)
+	}
+}
+
+// `gate --post` is wired to gatePost through the real entry point.
+func TestGatePostFlagReleasesThroughTheEntryPoint(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "locks")
+	t.Setenv("AGENTSYNC_DIR", dir)
+	t.Setenv("AGENTSYNC_OWNER", me)
+	s := store()
+	if err := os.MkdirAll(s.Dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Acquire("go-numerics/optimize", me, "", 45*time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := json.Marshal(map[string]any{
+		"session_id": me, "cwd": "/work/opt", "tool_name": "Bash",
+		"tool_input": map[string]any{"command": "ghmerge go-numerics/optimize 62"},
+	})
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.Write(b)
+	w.Close()
+	oldIn, oldOut := os.Stdin, os.Stdout
+	devnull, _ := os.OpenFile(os.DevNull, os.O_WRONLY, 0)
+	os.Stdin, os.Stdout = r, devnull
+	t.Cleanup(func() { os.Stdin, os.Stdout = oldIn, oldOut; devnull.Close() })
+	if err := gate([]string{"--post"}); err != nil {
+		t.Fatalf("gate --post: %v", err)
+	}
+	ls, _ := s.List()
+	if len(ls) != 0 {
+		t.Fatalf("the lease survived gate --post: %v", ls)
+	}
+}
