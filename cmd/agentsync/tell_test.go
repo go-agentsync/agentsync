@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // sandbox points the store and the owner at this test, so nothing here touches
@@ -307,6 +308,67 @@ func TestTellRefusesWhatItCannotSend(t *testing.T) {
 	// above are about what is missing and not about the command.
 	if err := tell([]string{"o/r", "a real message"}); err != nil {
 		t.Errorf("a well-formed tell gave %v", err)
+	}
+}
+
+// ⛔⛔ THE SHAPE THIS PROGRAM PRINTS, TYPED BACK AT IT. `claims` and every gate
+// refusal name a session by short(): eight hex characters. Answering one with
+// `agentsync tell 84a9d912 "..."` opens a queue on a resource nobody will ever
+// claim.
+//
+// Measured 2026-11-22: twice in one hour, by one session, to two different
+// sessions. Both times the output said in full "told 84a9d912 — NOBODY holds it
+// right now", which is the line this file's own comment added so that "told
+// nobody" could not look like "told someone". It was read past regardless.
+// A true line is not a gate.
+func TestASessionIdIsNotAResource(t *testing.T) {
+	sandbox(t, "sender-1111")
+	s := store()
+	if _, err := s.Acquire("go-webengine/engine", "84a9d912-aaaa-bbbb-cccc-000000000001", "", time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{
+		"84a9d912",                             // short(), what claims prints
+		"6ae1a34c",                             // another, holding nothing
+		"84a9d912-aaaa-bbbb-cccc-000000000001", // the raw session id
+	} {
+		err := tell([]string{id, "a handover that must not vanish"})
+		if err == nil {
+			t.Errorf("tell %q was accepted; the message reaches nobody", id)
+			continue
+		}
+		for _, want := range []string{"is a session id, not a resource", "agentsync claims"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("the refusal for %q does not say %q:\n%s", id, want, err)
+			}
+		}
+		// Nothing stored: a refusal that still delivered the mistake would be
+		// worse than the defect.
+		live, _, lerr := s.Messages(id, 0)
+		if lerr != nil {
+			t.Fatal(lerr)
+		}
+		if len(live) != 0 {
+			t.Errorf("%d message(s) stored on %q despite the refusal", len(live), id)
+		}
+	}
+	// It names where the message belongs, for the session that holds something.
+	if err := tell([]string{"84a9d912", "x"}); err == nil || !strings.Contains(err.Error(), "go-webengine/engine") {
+		t.Errorf("the refusal must name what that session holds:\n%v", err)
+	}
+	// And it must NOT name a repository for a session holding nothing: a
+	// refusal that invents a destination is worse than one that admits it has
+	// none.
+	if err := tell([]string{"6ae1a34c", "x"}); err == nil || strings.Contains(err.Error(), "currently holds") {
+		t.Errorf("a session holding nothing must get no destination:\n%v", err)
+	}
+	// ⛔ The control that keeps this from becoming a ban on hex names: a
+	// resource the store has seen is a resource, whatever it looks like.
+	if _, err := s.Acquire("deadbeef", "sender-1111", "", time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	if err := tell([]string{"deadbeef", "a real message about a real resource"}); err != nil {
+		t.Errorf("a claimed resource named in hex was refused: %v", err)
 	}
 }
 

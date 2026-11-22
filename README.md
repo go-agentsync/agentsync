@@ -149,6 +149,17 @@ Four properties, each the answer to something that has already gone wrong here:
   one property a channel must not have.
 - **`tell` says who will read it.** A message on an unheld resource still waits
   for the next claimer, and "told nobody" must not read like "told someone".
+- **A session id is not a resource**, and `tell` refuses one: eight hex
+  characters, which is what `claims` and every gate refusal print, or a raw
+  UUID. Answering a session by its id opened a queue nobody will ever claim.
+  ⛔ Measured 2026-11-22, twice in one hour by one session — and both times the
+  line above printed in full, "NOBODY holds it right now, so this waits for
+  whoever claims it next". It was read past anyway, because the eye was looking
+  for the word *told*. **A true line is not a gate; one that cannot be read past
+  is.** The refusal names what that session is holding, so the message has
+  somewhere to go, and says nothing when it holds nothing rather than inventing
+  a destination. A resource the store has already seen is never refused, so a
+  repository whose name happens to be hex keeps working.
 - **The flag works where your hand puts it.** `claim` and `messages` take their
   options before, after or between the resources, because this program *prints*
   `agentsync messages o/r --max-age 0 for all` and that command used to answer

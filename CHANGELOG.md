@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- `tell` refuses a resource that is a **session id** — `short()`'s eight hex
+  characters, or a raw UUID — because a message left on one opens a queue nobody
+  will ever claim. The refusal names what that session holds, so the message has
+  somewhere to go. Measured 2026-11-22: twice in one hour, by one session, and
+  both times the output said in full "NOBODY holds it right now". A true line is
+  not a gate. A resource the store has already seen is never refused, so a
+  repository whose name happens to be hex keeps working.
+
+## v0.11.1
+
 - `gate --hook` no longer refuses a command that publishes nothing: `-h`,
   `--help`, a leading `help`, `--version` and `--dry-run` need no claim at all.
   Measured 2026-11-22, `ghrelease --help` was refused in a clone of a repository
