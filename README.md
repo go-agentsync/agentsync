@@ -106,12 +106,20 @@ Each is now a tool's job:
   for an exhausted API budget exited 1 and the lease was released anyway, on a
   merge that never happened. Nothing is released when the event is
   `PostToolUseFailure`, when `error` or `is_error` is set, when `tool_response`
-  is missing or is a string, when the command was `interrupted`, or when an
-  `exit_code`/`exitCode` field is present and not 0. It decides from fields,
-  never from the output text. Known limit: a Claude Code that delivers a failed
-  command as a success-shaped object with none of those fields cannot be told
-  from a success; a lease kept by mistake is only idle-takeable after 15
-  minutes, so this errs toward keeping.
+  is missing, is a string, or is an object with **no fields at all**, when the
+  command was `interrupted`, or when an `exit_code`/`exitCode` field is present
+  and not 0. It decides from fields, never from the output text.
+
+  The empty object was the one shape left releasing after the above, and it was
+  written down here as an accepted limit before `FuzzGatePost`'s
+  `ghmerge-empty-response` seed showed it releasing a lease: `{}` carries
+  exactly what no `tool_response` carries, which the same check already refuses.
+  What is counted is the number of fields, not the presence of `stdout` by name,
+  so a Claude Code that renames a field degrades to the old behaviour — a lease
+  kept by mistake, idle-takeable after 15 minutes — rather than holding every
+  lease on the machine forever. Remaining limit, unchanged: a failed command
+  delivered as a populated success-shaped object with none of the fields above
+  still cannot be told from a success, and this errs toward keeping.
 - **`claim --wait` in the background is refused** by `gate --hook`
   (`run_in_background: true`). A lease is granted to whoever is waiting, and a
   background task outlives the turn that started it, so the lease sat held by
@@ -409,3 +417,19 @@ exercises the lease library too:
     go test -coverpkg=github.com/go-agentsync/agentsync/lease,github.com/go-agentsync/agentsync/cmd/agentsync \
         -coverprofile=cover.out ./...
     covblocks --max 0 cover.out     # go-fleettools/fleettools/cmd/covblocks
+
+Nine fuzz targets cover every parser of input this program does not write — the
+other sessions' lease files, the message and takes logs, the records file, a
+resource name on its way to a file path, and the hook payload both gates judge.
+Their seed corpora are committed under `testdata/fuzz/<Target>/`, so `go test`
+replays them without fuzzing, and CI fuzzes each for 20 s:
+
+    go test ./...                                   # replays the committed seeds
+    go test -run '^$' -fuzz FuzzGatePost -fuzztime 20s ./cmd/agentsync
+
+The gate targets assert what the gates are *for* — a publish into a repository
+nobody holds is denied, only a finishing command releases a lease — rather than
+asserting that the parser survives. Three defects came out of the first runs:
+`Normalize` was not a fixed point, that fixed point had no bound (`mutsweep`
+answered **HUNG**, not *survived*, which is how an unguarded loop reports
+itself), and an empty `tool_response` released a lease.
