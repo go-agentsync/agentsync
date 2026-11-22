@@ -163,8 +163,18 @@ func gateHook(stdin io.Reader, out, errOut io.Writer, env gateEnv) {
 			// A tracker write touches no file of the holder's, so it needs no lease; the
 			// holder is only named, so someone can tell them.
 			if l := env.holder(repo); l != nil {
+				// ⛔⛔ THE LAST ARGUMENT IS THE REPO, NOT THE OWNER. It used to be
+				// short(l.Owner), so this notice told every session to run
+				// `agentsync tell <session-id> ...` -- and `tell` takes a RESOURCE.
+				// Following it opened a queue on a pseudo-resource nobody will ever
+				// claim, and the message reached nobody. Measured 2026-11-22: twice
+				// in one hour, by a session that was doing exactly what this line
+				// said. An instruction a tool gives has to be one the tool accepts,
+				// which this repository already learnt from `messages o/r --max-age
+				// 0`; this is the same defect in the other direction, and it is why
+				// the refusal in tell.go is not enough on its own.
 				notice = append(notice, fmt.Sprintf("agentsync gate: %s is claimed by %s until %s; %s writes to its tracker only, which needs no lease. Tell the holder if it matters: agentsync tell %s ...",
-					repo, short(l.Owner), l.Expires.Format("15:04:05"), inv.prog, short(l.Owner)))
+					repo, short(l.Owner), l.Expires.Format("15:04:05"), inv.prog, repo))
 			}
 			continue
 		}

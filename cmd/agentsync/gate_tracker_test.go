@@ -33,6 +33,56 @@ func TestATrackerWriteIsAllowedWhereAnotherSessionHoldsTheClaim(t *testing.T) {
 	}
 }
 
+// ⛔⛔ AN INSTRUCTION THIS TOOL GIVES HAS TO BE ONE THIS TOOL ACCEPTS.
+//
+// The tracker notice above ends with a command to run, and its last argument
+// used to be short(l.Owner) -- a SESSION ID -- while `tell` takes a RESOURCE. So
+// the notice told every session to open a queue on a pseudo-resource nobody
+// will ever claim. Measured 2026-11-22: twice in one hour, by a session doing
+// exactly what the notice said, and both handovers were lost.
+//
+// This repository already paid for this once, from the other direction:
+// `messages o/r --max-age 0` was printed by this program and answered `usage:`.
+// So the test does not check the wording -- it takes the command out of the
+// notice and HANDS IT TO tell, which is the only check that cannot drift from
+// what tell accepts.
+func TestTheNoticesOwnCommandIsOneTellAccepts(t *testing.T) {
+	env, s := gateFixture(t)
+	if _, err := s.Acquire("go-numerics/optimize", them, "refbench", 45*time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	_, _, errText := ask(env, payload(t, me, "/work/opt", "ghissue go-numerics/optimize --new --title T --body-file f"))
+	i := strings.Index(errText, "agentsync tell ")
+	if i < 0 {
+		t.Fatalf("the notice no longer names a tell command, so this test measures nothing:\n%s", errText)
+	}
+	arg := strings.Fields(errText[i+len("agentsync tell "):])
+	if len(arg) == 0 {
+		t.Fatalf("the tell command in the notice has no argument:\n%s", errText)
+	}
+	if arg[0] != "go-numerics/optimize" {
+		t.Errorf("the notice says `agentsync tell %s`; it must name the RESOURCE, go-numerics/optimize", arg[0])
+	}
+	// The part that cannot go stale: tell itself judges the argument. If the
+	// notice ever names a session again, this fails without anyone having to
+	// remember what a session id looks like.
+	//
+	// ⛔ THE CLAIM BELOW NAMES THE RESOURCE LITERALLY, NEVER arg[0]. Written as
+	// Acquire(arg[0], ...) -- the obvious way -- it taught the store that the
+	// string read out of the notice IS a resource, so tell accepted it and this
+	// half of the test passed WITH the defect reinstated. Measured 2026-11-22:
+	// only the comparison above went red. Two errors cancelling, the shape of
+	// [[proxy-measure-lets-two-errors-cancel]]: the fixture must not learn its
+	// facts from the thing under measurement.
+	sandbox(t, me)
+	if _, err := store().Acquire("go-numerics/optimize", them, "refbench", time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	if err := tell([]string{arg[0], "the notice told me to send this"}); err != nil {
+		t.Errorf("tell refuses the command the notice prints: %v", err)
+	}
+}
+
 // The other side of the boundary: everything that is not a tracker write is
 // still refused, and so is a ghissue flag the classifier does not know.
 func TestACodeWriteOrAnUnclassifiedCommandIsStillRefused(t *testing.T) {

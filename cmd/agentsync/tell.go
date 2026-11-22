@@ -8,6 +8,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/go-agentsync/agentsync/lease"
 )
 
 // tell leaves a message about a resource for whoever holds it.
@@ -26,6 +28,42 @@ import (
 // nothing but word characters. It deliberately does NOT match text that merely
 // begins with a dash, because any whitespace disqualifies it.
 var flagToken = regexp.MustCompile(`^--?[A-Za-z][A-Za-z0-9._-]*$`)
+
+// sessionIDLike matches the two shapes a SESSION is written in here: short()'s
+// eight hex characters, which `claims` and every refusal print, and the raw
+// CLAUDE_CODE_SESSION_ID, which is a UUID. Neither is ever a resource.
+var sessionIDLike = regexp.MustCompile(`^(?:[0-9a-f]{8}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$`)
+
+// knownResource reports whether the store has ever seen s as a resource --
+// expired leases included, since a resource does not stop being one when its
+// lease lapses. It is what keeps the refusal from touching a repository whose
+// name happens to look like a session id.
+func knownResource(ls []lease.Lease, s string) bool {
+	for _, l := range ls {
+		if l.Resource == s {
+			return true
+		}
+	}
+	return false
+}
+
+// holdsWhat names what the session identified by s is holding, so the refusal
+// says where the message belongs instead of only where it does not. It returns
+// "" when nothing can be attributed, because a refusal that invents a
+// destination is worse than one that admits it has none.
+func holdsWhat(ls []lease.Lease, s string) string {
+	var held []string
+	now := time.Now()
+	for _, l := range ls {
+		if short(l.Owner) == s && !l.Expired(now) {
+			held = append(held, l.Resource)
+		}
+	}
+	if len(held) == 0 {
+		return ""
+	}
+	return ", and it currently holds " + strings.Join(held, ", ")
+}
 
 // tellUsage names every accepted form, because the refusal below points at it
 // and a refusal that does not name the working form is half a refusal.
@@ -107,6 +145,33 @@ func tell(args []string) error {
 	}
 
 	s := store()
+
+	// ⛔⛔ A SESSION ID IS NOT A RESOURCE -- and it is the shape THIS PROGRAM
+	// PRINTS. `claims`, and every refusal the gate writes, name a session by
+	// short(): eight hex characters. So the obvious way to answer one,
+	// `agentsync tell 84a9d912 "..."`, opens a queue on a resource nobody will
+	// ever claim, and the message is read by no one.
+	//
+	// Measured 2026-11-22: twice inside one hour, by one session, to two
+	// different sessions. Both times the output said, correctly and in full:
+	//
+	//	told     84a9d912 — NOBODY holds it right now, so this waits for whoever claims it next
+	//
+	// That line exists because of the comment at the top of this file -- "told
+	// nobody must not look like told someone". It did not look like it. It was
+	// read past anyway, because the reader was looking for the word "told".
+	// ⛔ A TRUE LINE IS NOT A GATE. One that cannot be read past is.
+	//
+	// It refuses only when the store has never seen that string as a RESOURCE,
+	// so a repository whose name happens to be eight hex characters keeps
+	// working as soon as it has been claimed once; and if the store cannot be
+	// read, nothing is refused, because a refusal is not a verdict.
+	if ls, err := s.List(); err == nil && !knownResource(ls, resource) && sessionIDLike.MatchString(resource) {
+		return fmt.Errorf("%s is a session id, not a resource: a message left on it reaches nobody%s.\n"+
+			"Leave it on a repository that session holds -- `agentsync claims` names them -- and say who it is for in the text.\n%s",
+			resource, holdsWhat(ls, resource), tellUsage)
+	}
+
 	if _, err := s.Tell(resource, owner(), text); err != nil {
 		return err
 	}
