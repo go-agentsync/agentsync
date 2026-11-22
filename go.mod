@@ -15,4 +15,4 @@ module github.com/go-agentsync/agentsync
 // the only one: an advisory with a released fix cannot be waived here.
 go 1.27.4
 
-require github.com/go-gitsafe/gitsafe v0.58.1
+require github.com/go-gitsafe/gitsafe v0.59.0
