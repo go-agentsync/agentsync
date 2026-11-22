@@ -190,12 +190,10 @@ func sessionGone(projects, sessionID string, now func() time.Time, grace time.Du
 	if err != nil {
 		return nil
 	}
-	info, err := statFile(filepath.Join(dir, sessionID+".jsonl"))
-	if err != nil {
-		return nil
-	}
-	if silent := now().Sub(info.ModTime()); silent > grace {
-		return fmt.Errorf("%w: its transcript has been silent for %s (limit %s)", errRequesterGone, silent.Round(time.Second), grace)
+	if info, err := statFile(filepath.Join(dir, sessionID+".jsonl")); err == nil {
+		if silent := now().Sub(info.ModTime()); silent > grace {
+			return fmt.Errorf("%w: its transcript has been silent for %s (limit %s)", errRequesterGone, silent.Round(time.Second), grace)
+		}
 	}
 	return nil
 }
