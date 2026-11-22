@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("{\"resource\":\"o/r\",\"owner\":\"a\",\"keep\":\"waiting on CI\"}")

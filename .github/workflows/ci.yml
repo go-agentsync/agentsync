@@ -156,3 +156,55 @@ jobs:
           "$BIN/govulncheck" -format json ./... > /tmp/vuln.json || true
           test -s /tmp/vuln.json || { echo "::error::govulncheck wrote nothing at all"; exit 1; }
           "$BIN/vulngate" -go "$(go env GOVERSION)" /tmp/vuln.json
+
+  # ⛔ NOTHING FED THESE PARSERS ANYTHING BUT WHAT THEIR AUTHOR THOUGHT OF.
+  # Measured 2026-11-22: `git grep "func Fuzz"` returned nothing and there was no
+  # testdata/ anywhere, in the program ~25 sessions on one machine coordinate
+  # through. Its inputs are not its own: a lease file another session may have
+  # half-written, a message log, a records file, and the PreToolUse/PostToolUse
+  # payload carrying the command line the gate judges. `go test` already replays
+  # every committed seed (testdata/fuzz/<Target>/, the layout
+  # go-agentsync/agentscope uses) in the test lane above; this lane is the part
+  # that GENERATES inputs, for a bounded time.
+  #
+  # ⛔ The two gate targets assert what the gate is FOR -- a publish into a
+  # repository nobody holds is denied, a lease is released only by a finishing
+  # command -- not merely that it does not crash; "did not crash" passes both
+  # defects fixed on 2026-11-22. They are built from decisions made before the
+  # gate runs, so a gate that is wrong cannot also be the oracle.
+  #
+  # `go test -fuzz` takes ONE target in ONE package, so one step per target, each
+  # naming its own status: a red "fuzz FuzzGatePost" says which parser. `-run '^$'`
+  # keeps the ordinary tests from re-running nine times; go itself refuses a
+  # -fuzz pattern that matches no target, so a renamed one fails here instead of
+  # passing on nothing. 20 s each, nine targets: about three minutes. A crasher
+  # the run finds is written under testdata/fuzz/ and is committed with its fix,
+  # which turns it into a seed every `go test` replays from then on.
+  fuzz:
+    name: fuzz (bounded)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: go version
+      - name: fuzz FuzzParseLease
+        run: go test -run '^$' -fuzz '^FuzzParseLease$' -fuzztime 20s ./lease
+      - name: fuzz FuzzParseTells
+        run: go test -run '^$' -fuzz '^FuzzParseTells$' -fuzztime 20s ./lease
+      - name: fuzz FuzzParseTakes
+        run: go test -run '^$' -fuzz '^FuzzParseTakes$' -fuzztime 20s ./lease
+      - name: fuzz FuzzNormalizePath
+        run: go test -run '^$' -fuzz '^FuzzNormalizePath$' -fuzztime 20s ./lease
+      - name: fuzz FuzzParseRecords
+        run: go test -run '^$' -fuzz '^FuzzParseRecords$' -fuzztime 20s ./cmd/agentsync
+      - name: fuzz FuzzGateHook
+        run: go test -run '^$' -fuzz '^FuzzGateHook$' -fuzztime 20s ./cmd/agentsync
+      - name: fuzz FuzzGateHookPayload
+        run: go test -run '^$' -fuzz '^FuzzGateHookPayload$' -fuzztime 20s ./cmd/agentsync
+      - name: fuzz FuzzGatePost
+        run: go test -run '^$' -fuzz '^FuzzGatePost$' -fuzztime 20s ./cmd/agentsync
+      - name: fuzz FuzzGatePostPayload
+        run: go test -run '^$' -fuzz '^FuzzGatePostPayload$' -fuzztime 20s ./cmd/agentsync

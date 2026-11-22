@@ -40,6 +40,46 @@
   known when it detaches) and a non-zero `exit_code`/`exitCode` release nothing. The
   payload documents no exit status, so a failure delivered as a success-shaped
   object with none of those fields still releases.
+- **Fuzz targets and a committed seed corpus for every parser of input this
+  program does not write.** Nine targets (`FuzzParseLease`, `FuzzParseTells`,
+  `FuzzParseTakes`, `FuzzNormalizePath`, `FuzzParseRecords`, `FuzzGateHook`,
+  `FuzzGateHookPayload`, `FuzzGatePost`, `FuzzGatePostPayload`), seeds under
+  `testdata/fuzz/<Target>/` in the layout `go-agentsync/agentscope` uses, and a
+  `fuzz` CI lane of 20 s per target. The gate targets assert what the gate is
+  for (a publish into an unheld repository is denied; only a finishing command
+  releases a lease), not that it survives. `FuzzGatePost` asserts the strict
+  property — no release without evidence of success — unconditionally. It was
+  written behind a `postsuccess` build tag because it was red on five seeds (a
+  refused `403`, a non-zero exit, an interrupted run, an empty result, a null
+  result), each of which released a lease; the tag is gone now that v0.12.0
+  carries the `notSucceeded` fix those seeds measured, so the five are a
+  permanent assertion rather than a record of a defect.
+- **`Normalize` is a fixed point.** `FuzzNormalizePath` found, on its first run,
+  that `githuB.Com/ 0` normalizes to ` 0` and a second pass to `0`: the gate
+  normalizes a repository and the store normalizes it again, so one name could
+  reach two keys. It now repeats until the key stops moving — and the repetition
+  is **bounded**, which the fixed-point change was not. `mutsweep` negated the
+  loop's `next == s` and the mutation HUNG instead of failing a test: the only
+  thing between `Normalize` and an endless loop was that comparison plus a
+  comment arguing about a different function. Both gates run on every Bash
+  command this machine issues and normalize names read from other sessions'
+  lease files, so a step that ever grew or cycled a string would hang the
+  command rather than mis-key a lease. The limit is `len(s)+1` passes, taken
+  **once**: written `i <= len(s)` it is re-measured every pass and a growing
+  step outruns it — measured, still looping after 226,430 passes. Two tests hold
+  it: a divergent step must return, and a name that settles must cost exactly two
+  passes (the mutant returns the same string, so only the work tells them apart).
+- **An empty `tool_response` released a lease**, and the corpus above is how it
+  was found. `notSucceeded` (v0.12.0) fails closed on a refused `403`, a non-zero
+  exit, an interruption, a missing response and a null one — five of the six
+  shapes `FuzzGatePost` seeds — but `"tool_response":{}` still read as a success.
+  The v0.12.0 entry recorded that as accepted ("a failure delivered as a
+  success-shaped object with none of those fields still releases"); it is a
+  defect, because an object with no fields is the same absence as no object, and
+  every completed Bash call carries at least one of `stdout`, `stderr`,
+  `interrupted` or `isImage`. The check counts fields rather than requiring
+  `stdout` by name, so a harness that renames one keeps releasing leases instead
+  of holding every one of them forever.
 - **A test can no longer reach the shared claims directory.** `root()` panics
   under `go test` when `AGENTSYNC_DIR` is unset, instead of returning the path
   where every live session's leases are. It found two writers on its first run:
