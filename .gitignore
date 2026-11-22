@@ -1,0 +1,15 @@
+# Editor and tool scratch files that must never be committed.
+#
+# Three of these were committed to main by #34: lease/.idle.go.atomicwrite-112752008,
+# -526108506 and -917872315. Two were empty and the third was a 219-line copy of
+# lease/idle.go, i.e. a duplicate of source that nothing compiles and nothing
+# updates -- the worst kind, because it reads as the real file.
+#
+# They are written beside the file being saved, by the editing tool and not by
+# any code in this repository, so no cleanup here can prevent them; `git add -A`
+# is what picks them up. This file is what stops that.
+.*.atomicwrite-*
+
+# Coverage and build output.
+*.out
+*.test
