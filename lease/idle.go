@@ -16,8 +16,8 @@ import (
 // to see the timeout; a bounded loop, not a clock, so the bound cannot be
 // mutated into waiting for ever.
 var (
-	lockStale = 10 * time.Second
-	lockTries = 20000
+	lockStale = 2 * time.Second
+	lockTries = 3000
 )
 
 // rm removes a file; Store.remove replaces it in a test, because the failure it
