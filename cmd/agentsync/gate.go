@@ -168,6 +168,22 @@ func gateHook(stdin io.Reader, out, errOut io.Writer, env gateEnv) {
 			}
 			continue
 		}
+		// #30: a request for help or a version, and a dry run, write nothing, so
+		// they need no lease. Measured 2026-11-22: `ghrelease --help` was refused
+		// in a clone of a repository NOBODY held -- and reading a program's flags
+		// is exactly what one does before deciding whether to claim anything.
+		//
+		// ⛔ AFTER the tracker branch, not before it. Checking this first was the
+		// obvious placement and it silenced `ghissue … --dry-run`'s notice naming
+		// the holder: that notice is not a refusal, so "needs no lease" is not a
+		// reason to skip it. The suite caught it; nothing about the shape of the
+		// code did.
+		//
+		// Before touch(), too: reading a program's flags is not work on the
+		// repository, so it must not keep a lease from reading as idle.
+		if publishesNothing(inv.args) {
+			continue
+		}
 		if msg := env.decide(repo, errOut); msg != "" {
 			_ = json.NewEncoder(out).Encode(map[string]any{
 				"hookSpecificOutput": map[string]any{
