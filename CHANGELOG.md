@@ -13,7 +13,14 @@
   test could ever see it. `newFlags`/`parseFlags` return an `exitError` instead
   (2 for a bad flag, 0 for `-h`: what `ExitOnError` did) and `run()` turns it
   into the status, leaving `main()` one line. No behaviour changes.
-
+- `gate --hook` refuses `agentsync claim --wait` when the Bash call has
+  `run_in_background: true`: the wait outlives its turn and the lease is held by
+  nobody (lesson recurred 2026-11-22).
+- `gate --post` releases only when the payload shows a zero exit (fail closed):
+  PostToolUseFailure, `error`, `is_error`, a missing or string `tool_response`,
+  `interrupted` and a non-zero `exit_code`/`exitCode` release nothing. The
+  payload documents no exit status, so a failure delivered as a success-shaped
+  object with none of those fields still releases.
 - **A test can no longer reach the shared claims directory.** `root()` panics
   under `go test` when `AGENTSYNC_DIR` is unset, instead of returning the path
   where every live session's leases are. It found two writers on its first run:
@@ -56,13 +63,6 @@
   direction: a bare `help` counts only as the first argument (`--title help` is a
   value), and `--dry-run=false` is a publish rather than a dry run. An
   unparseable value counts as publishing.
-- `gate --hook` refuses `agentsync claim --wait` when the Bash call has
-  `run_in_background: true`: the wait outlives its turn and the lease is held by
-  nobody (lesson recurred 2026-11-22).
-- `gate --post` releases only when the payload shows a zero exit (fail closed):
-  PostToolUseFailure, `error`, `is_error`, a missing or string `tool_response`,
-  `interrupted` and a non-zero `exit_code`/`exitCode` release nothing. This
-  replaces the "still to do" below.
 - `gate --post` no longer releases a lease for an invocation that cannot have
   published anything: `-h`, `--help`, `help` and `--version` join `--dry-run`.
   Measured 2026-11-22, a plain `ghrelease -h` released a lease on a repository
