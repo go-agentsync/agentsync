@@ -101,14 +101,22 @@ Each is now a tool's job:
   could have been released, while there the same answer would let a publish run
   with no lease at all.
 
-  ⛔ **This does not yet read whether the command itself succeeded.** These lines
-  used to say the hook "Claude Code runs only for a command that succeeded", and
-  that was wrong: a `Bash` call running a program that exits non-zero is a tool
-  call that worked, so PostToolUse fires and PostToolUseFailure does not.
-  Measured the same day, a `ghmerge` refused with a 403 for an exhausted API
-  budget exited 1 and the lease was released anyway, on a merge that never
-  happened. Until that is read from the payload's `tool_response`, check the exit
-  status and `agentsync claims` after a merge rather than the hook's message.
+  ⛔ **It releases only when the payload shows a command that ran to a zero
+  exit, and fails closed.** Measured 2026-11-22, a `ghmerge` refused with a 403
+  for an exhausted API budget exited 1 and the lease was released anyway, on a
+  merge that never happened. Nothing is released when the event is
+  `PostToolUseFailure`, when `error` or `is_error` is set, when `tool_response`
+  is missing or is a string, when the command was `interrupted`, or when an
+  `exit_code`/`exitCode` field is present and not 0. It decides from fields,
+  never from the output text. Known limit: a Claude Code that delivers a failed
+  command as a success-shaped object with none of those fields cannot be told
+  from a success; a lease kept by mistake is only idle-takeable after 15
+  minutes, so this errs toward keeping.
+- **`claim --wait` in the background is refused** by `gate --hook`
+  (`run_in_background: true`). A lease is granted to whoever is waiting, and a
+  background task outlives the turn that started it, so the lease sat held by
+  nobody while the queue waited. Wait in the foreground, in the turn that uses
+  the lease: `agentsync claim --wait 9m <repo> && <the work> && agentsync release <repo>`.
 - **A lease idle for 15 minutes may be taken.** Idle means no claim, renewal or
   publish by the holder (an allowed gated command counts). The default is 15
   minutes because a CI run, a quota reset or a load wait costs the queue far more

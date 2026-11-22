@@ -54,6 +54,32 @@ import (
 const gateUsage = "usage: agentsync gate --hook   (PreToolUse payload on stdin)\n" +
 	"       agentsync gate <owner/repo>... (would a publish into it be allowed for this session?)"
 
+// waitProg marks an `agentsync claim --wait` among the invocations; it is no
+// program of the gated set and names no repository.
+const waitProg = "agentsync claim --wait"
+
+const backgroundWaitRefusal = "agentsync: `claim --wait` must not run in the background. A lease is granted to whoever is waiting, " +
+	"and a background task outlives the turn that started it, so the lease would be held by nobody while the queue waits behind it.\n" +
+	"Wait in the foreground, in the turn that uses the lease: agentsync claim --wait 9m <repo> && <the work> && agentsync release <repo> " +
+	"(the Bash tool's own limit is ten minutes; repeat the foreground call if the holder has not finished)."
+
+// isClaimWait reports whether args (after `agentsync`) are a claim that waits.
+func isClaimWait(args []string) bool {
+	if len(args) == 0 || args[0] != "claim" {
+		return false
+	}
+	for _, a := range args[1:] {
+		if !strings.HasPrefix(a, "-") {
+			continue
+		}
+		a = strings.TrimLeft(a, "-")
+		if a == "wait" || strings.HasPrefix(a, "wait=") {
+			return true
+		}
+	}
+	return false
+}
+
 // gated are the programs that write to a repository.
 var gated = map[string]bool{
 	"gitpush": true, "ghmerge": true, "ghrelease": true, "ghpr": true,
@@ -132,6 +158,10 @@ func gateHook(stdin io.Reader, out, errOut io.Writer, env gateEnv) {
 		ToolName  string `json:"tool_name"`
 		ToolInput struct {
 			Command string `json:"command"`
+			// RunInBackground is `any` so that a value that is not the boolean
+			// true (a string, a number) is no finding rather than a payload that
+			// cannot be read.
+			RunInBackground any `json:"run_in_background"`
 		} `json:"tool_input"`
 	}
 	b, err := io.ReadAll(stdin)
@@ -143,7 +173,28 @@ func gateHook(stdin io.Reader, out, errOut io.Writer, env gateEnv) {
 		return
 	}
 	invs := invocations(p.ToolInput.Command, p.Cwd, env.home)
-	if len(invs) == 0 {
+	// ⛔ A lease wait belongs to the turn that uses the lease. Run in the
+	// background it outlives that turn, and is granted to nobody (agentsync#33,
+	// occurrence 7). Decided from the command and the payload alone.
+	background := p.ToolInput.RunInBackground == true
+	rest := invs[:0:0]
+	for _, inv := range invs {
+		if inv.prog != waitProg {
+			rest = append(rest, inv)
+			continue
+		}
+		if background {
+			_ = json.NewEncoder(out).Encode(map[string]any{
+				"hookSpecificOutput": map[string]any{
+					"hookEventName":            "PreToolUse",
+					"permissionDecision":       "deny",
+					"permissionDecisionReason": backgroundWaitRefusal,
+				},
+			})
+			return
+		}
+	}
+	if invs = rest; len(invs) == 0 {
 		return
 	}
 	env.owner = firstSet(env.override, p.SessionID, env.session)
@@ -443,6 +494,14 @@ func scanSimple(ws []word, dir, homeDir string) ([]invocation, string) {
 			var inv []invocation
 			inv, dir = scanSimple(w[i+1:], dir, homeDir)
 			out = append(out, inv...)
+		}
+	case base == "agentsync":
+		args := make([]string, 0, len(w)-i-1)
+		for _, a := range w[i+1:] {
+			args = append(args, a.s)
+		}
+		if isClaimWait(args) {
+			out = append(out, invocation{prog: waitProg, args: args, dir: dir})
 		}
 	case gated[base]:
 		args := make([]string, 0, len(w)-i-1)

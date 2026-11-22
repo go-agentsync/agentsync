@@ -56,6 +56,13 @@
   direction: a bare `help` counts only as the first argument (`--title help` is a
   value), and `--dry-run=false` is a publish rather than a dry run. An
   unparseable value counts as publishing.
+- `gate --hook` refuses `agentsync claim --wait` when the Bash call has
+  `run_in_background: true`: the wait outlives its turn and the lease is held by
+  nobody (lesson recurred 2026-11-22).
+- `gate --post` releases only when the payload shows a zero exit (fail closed):
+  PostToolUseFailure, `error`, `is_error`, a missing or string `tool_response`,
+  `interrupted` and a non-zero `exit_code`/`exitCode` release nothing. This
+  replaces the "still to do" below.
 - `gate --post` no longer releases a lease for an invocation that cannot have
   published anything: `-h`, `--help`, `help` and `--version` join `--dry-run`.
   Measured 2026-11-22, a plain `ghrelease -h` released a lease on a repository
@@ -65,7 +72,6 @@
   is removed from the code comment and the README, because it is false: a `Bash`
   call running a program that exits non-zero is a tool call that worked. A
   `ghmerge` refused with a 403 released the lease on a merge that never happened.
-  Reading the payload's `tool_response` is still to do.
 
 ## v0.11.0
 
