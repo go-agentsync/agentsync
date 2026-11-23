@@ -250,6 +250,30 @@ still proceeds.
 organisation reaches the repository somebody is working in. The comparison is by
 path segment, so `go-tex` does not enclose `go-texinfo`.
 
+**One repository has three spellings, and all three are one lease.** A session
+reaches for whichever name is in front of it, so `go-gitsafe/gitsafe`, the bare
+`gitsafe`, and the clone directory `go-gitsafe-gitsafe` collide with each other
+and with a claim on `go-gitsafe`. ⛔ Measured live on 2026-11-22: the first and
+the third were held *at the same time, by two different sessions*, each
+believing it had coordinated — and a subagent waiting for one of them was
+queued behind a key nobody was using.
+
+The clone-directory form is compared by **exact equality against a lease that
+already exists** (`owner + "-" + repo`), never by splitting the dashed name:
+`go-tex-engine` could be read as `go-tex/engine` or `go/tex-engine`, and nothing
+in the string says which, so splitting it would invent an owner. What this
+deliberately does **not** collide with: a worktree topic
+(`go-gitsafe-gitsafe-githooks` — two checkouts of one repository are claimed
+separately on purpose), a deeper path, and any repository that merely contains
+a dash.
+
+A refusal names the spelling the **holder** used when it differs from the one
+asked for, because that is the row to look for in `claims`:
+
+    REFUSED  go-gitsafe/gitsafe
+             held by 6899659a until 00:34:26
+             as "go-gitsafe-gitsafe" -- the same resource under another spelling
+
 `mem-add` takes a lease on the index, inserts once, and **reads the file back**
 to confirm the line survived. Trusting the write would reproduce the bug.
 

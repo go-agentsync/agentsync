@@ -2,6 +2,31 @@
 
 ## Unreleased
 
+- **The clone directory is the same repository** (#23). `go-gitsafe/gitsafe` and
+  `go-gitsafe-gitsafe` were two leases, and on 2026-11-22 they were held *at the
+  same time, by two different sessions*, each believing it had coordinated — a
+  third reading `claims` saw two unrelated rows, and a subagent waiting for one
+  of them was queued behind the key that was not in use. `bareNames` could not
+  see this pair: the dash form has no slash, so its last segment is the whole
+  string, which is why the collision outlived the fix that predicate was written
+  for. ⛔ The comparison is an **exact equality against a lease that already
+  exists** (`owner + "-" + repo`), never a split of the dashed name —
+  `go-tex-engine` reads as either `go-tex/engine` or `go/tex-engine`, and
+  splitting it would invent an owner. A worktree topic
+  (`go-gitsafe-gitsafe-githooks`), a deeper path and an unrelated repository
+  carrying a dash are all left alone, each with a test. `Covering` learned the
+  same spelling, so a session that claimed the clone directory is recognised as
+  the holder when it publishes.
+- **A refusal names the spelling the holder used** when it differs from the one
+  asked for. `held by 6899659a` is not an address: the row in `claims` is under
+  the holder's own words, and a session that cannot find it concludes the lease
+  is stale. This is the half that cost a subagent its wait, not the collision
+  itself.
+- Not closed by this: a bare name whose owner is unknown to the store still
+  stands as its own resource, because a name without a slash is a legitimate
+  worktree topic here and nothing in it says who the owner is. #23 stays open
+  for that half.
+
 - ⛔ **v0.13.0 could not be installed, and nothing here could have noticed.**
   The seed `lease/testdata/fuzz/FuzzNormalizePath/nul`, named after the input it
   holds, is a path the Go module zip format refuses: `nul` is a reserved Windows

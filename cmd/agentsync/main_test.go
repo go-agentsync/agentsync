@@ -240,6 +240,44 @@ func TestASentenceStandingAloneIsNamedAsANote(t *testing.T) {
 	}
 }
 
+// ⛔ A REFUSAL THAT NAMES ONLY THE OWNER IS NOT AN ADDRESS.
+//
+// The holder may have claimed the clone directory ("go-gitsafe-gitsafe"), the
+// bare name, or the organisation around the repository, and `claims` lists it
+// under that spelling. A session refused on "go-gitsafe/gitsafe" then searches
+// the listing for a row that is not there. Measured 2026-11-22: a subagent of
+// mine waited on the spelling it had asked for while the live lease was the
+// other one, so it queued behind a key nobody was using.
+func TestARefusalNamesTheSpellingTheHolderUsed(t *testing.T) {
+	sandbox(t, "alice-1111")
+	if err := claim([]string{"go-gitsafe-gitsafe"}); err != nil {
+		t.Fatalf("alice claiming the clone directory: %v", err)
+	}
+	t.Setenv("AGENTSYNC_OWNER", "bob-2222")
+	var err error
+	out := capture(t, func() { err = claim([]string{"go-gitsafe/gitsafe"}) })
+	if err == nil {
+		t.Fatal("bob claiming the same repository under another spelling was allowed")
+	}
+	for _, want := range []string{"REFUSED  go-gitsafe/gitsafe", `as "go-gitsafe-gitsafe"`, "another spelling"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("the refusal does not say %q:\n%s", want, out)
+		}
+	}
+
+	// And it stays quiet when the spelling IS the one asked for: a line saying
+	// "the same resource under another spelling" about the same string would be
+	// noise on the common refusal.
+	if err := claim([]string{"o/r"}); err != nil {
+		t.Fatalf("bob claiming a free resource: %v", err)
+	}
+	t.Setenv("AGENTSYNC_OWNER", "carol-3333")
+	out = capture(t, func() { _ = claim([]string{"o/r"}) })
+	if strings.Contains(out, "another spelling") {
+		t.Errorf("the spelling line was printed for an identical name:\n%s", out)
+	}
+}
+
 // ⛔⛔ "." NAMES WHERE YOU ARE STANDING AND NOTHING ELSE SEES THE SAME PLACE.
 //
 // Measured 2026-11-22, both live in the shared store on the same day: `.` held
