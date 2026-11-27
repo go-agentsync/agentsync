@@ -263,6 +263,24 @@ func dashNames(dashed, qualified string) bool {
 	return dashed == owner+"-"+repo
 }
 
+// SameRepository reports whether two NORMALISED keys name one repository under
+// the spellings this machine produces: the qualified `owner/repo`, the bare
+// `repo`, and the clone directory `owner-repo`. It is symmetric, and it is
+// deliberately NOT `covers`: an organisation encloses a repository without
+// being it, and a caller asking "is this lease about exactly this repository"
+// must not be handed the lease on everything around it.
+//
+// ⛔ It exists because the publish gate had its own copy of the rule, matching
+// the qualified and bare forms only, and so never released a lease taken under
+// the clone directory name: the spellings were made equal for CLAIMING in one
+// place and left unequal for RELEASING in another. One repository's spellings
+// are decided here, once, and every caller asks this.
+func SameRepository(a, b string) bool {
+	return a == b ||
+		bareNames(a, b) || bareNames(b, a) ||
+		dashNames(a, b) || dashNames(b, a)
+}
+
 // overlapping reports a live lease that encloses this resource or sits inside
 // it, held by somebody else.
 //

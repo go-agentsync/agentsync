@@ -271,6 +271,27 @@ func TestGatePostSaysWhyItCouldNotNameARepositoryAndReleasesOnceEach(t *testing.
 	}
 }
 
+// The lease a session takes under the clone directory name is the lease the
+// publish was made under, so the publish must release it. It did not: the gate
+// carried its own list of spellings, which knew the qualified and bare names
+// only, and the lease survived every merge until it went idle -- refused to
+// everybody else all the while, since claiming already knew the dash form.
+func TestAPublishReleasesTheLeaseTakenOnTheCloneDirectory(t *testing.T) {
+	for _, held := range []string{"go-numerics-optimize", "optimize", "go-numerics/optimize"} {
+		env, s := gateFixture(t)
+		if _, err := s.Acquire(held, me, "", time.Hour); err != nil {
+			t.Fatal(err)
+		}
+		_, errOut := post(t, env, me, "/work/opt", "ghmerge go-numerics/optimize 62")
+		if !strings.Contains(errOut, "is released.") {
+			t.Errorf("holding %q, the publish released nothing:\n%s", held, errOut)
+		}
+		if ls, _ := s.List(); len(ls) != 0 {
+			t.Errorf("holding %q, the lease survived the publish: %v", held, ls)
+		}
+	}
+}
+
 // A claims directory that can be read but not written to: the release and the
 // activity record both fail, and both say so rather than pretend.
 func readOnlyLeases(t *testing.T) (gateEnv, lease.Store) {

@@ -22,6 +22,16 @@
   the holder's own words, and a session that cannot find it concludes the lease
   is stale. This is the half that cost a subagent its wait, not the collision
   itself.
+- **A publish releases the lease under whichever spelling it was taken.** Found
+  by an adversarial review of the branch above, and it was that branch's own
+  doing: the publish gate carried a *second copy* of the spelling rule, matching
+  the qualified and bare names only. So a session claiming `go-gitsafe-gitsafe`
+  had its claim refused to everyone else — the new rule working — and then kept
+  the lease through every merge it was taken for, until it went idle. The rule
+  now lives once, as `lease.SameRepository`, and the gate asks it. ⛔ The lesson
+  is not the dash form: it is that making two names equal in one place and not
+  the other is worse than leaving them unequal everywhere, because the half that
+  grants and the half that releases disagree about what is held.
 - Not closed by this: a bare name whose owner is unknown to the store still
   stands as its own resource, because a name without a slash is a legitimate
   worktree topic here and nothing in it says who the owner is. #23 stays open

@@ -267,6 +267,11 @@ deliberately does **not** collide with: a worktree topic
 separately on purpose), a deeper path, and any repository that merely contains
 a dash.
 
+A successful publish releases the lease under **whichever spelling it was taken
+under**, for the same reason: the session that claimed the clone directory is
+the session that merged, and a lease it cannot be relieved of is a lease that
+blocks everyone until it goes idle.
+
 A refusal names the spelling the **holder** used when it differs from the one
 asked for, because that is the row to look for in `claims`:
 
