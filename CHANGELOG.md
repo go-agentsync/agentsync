@@ -27,6 +27,8 @@
   worktree topic here and nothing in it says who the owner is. #23 stays open
   for that half.
 
+## v0.13.1
+
 - ⛔ **v0.13.0 could not be installed, and nothing here could have noticed.**
   The seed `lease/testdata/fuzz/FuzzNormalizePath/nul`, named after the input it
   holds, is a path the Go module zip format refuses: `nul` is a reserved Windows
