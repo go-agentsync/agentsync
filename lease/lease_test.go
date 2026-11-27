@@ -309,6 +309,123 @@ func TestReleasingWhatWasClaimedUnderAnotherSpelling(t *testing.T) {
 	}
 }
 
+// ⛔⛔ THE CLONE DIRECTORY IS THE SAME REPOSITORY, and it was held twice.
+//
+// Measured on this machine 2026-11-22: `go-gitsafe/gitsafe` held by one session
+// and `go-gitsafe-gitsafe` by another, at the same time. Each believed it had
+// coordinated; a third session reading `claims` saw two unrelated rows; and a
+// subagent waiting for the first was queued behind a key that was not the one
+// in use. bareNames cannot see this pair, because the dash form has no slash.
+func TestTheCloneDirectorySpellingIsTheSameRepository(t *testing.T) {
+	for _, order := range [][2]string{
+		{"go-gitsafe/gitsafe", "go-gitsafe-gitsafe"},
+		{"go-gitsafe-gitsafe", "go-gitsafe/gitsafe"},
+	} {
+		s := store(t, time.Unix(1000, 0))
+		if _, err := s.Acquire(order[0], "alice", "", time.Hour); err != nil {
+			t.Fatalf("%s: %v", order[0], err)
+		}
+		_, err := s.Acquire(order[1], "bob", "", time.Hour)
+		var held *Held
+		if !errors.As(err, &held) {
+			t.Errorf("alice holds %s, bob claiming %s got %v; want a refusal naming alice",
+				order[0], order[1], err)
+			continue
+		}
+		if held.By.Owner != "alice" {
+			t.Errorf("refused, but named %q as the holder, not alice", held.By.Owner)
+		}
+	}
+}
+
+// The control for the test above: the same collision one spelling further out,
+// which bareNames has caught since v0.11.x. If this ever goes red the dash case
+// is not what regressed.
+func TestTheBareNameIsStillTheSameRepository(t *testing.T) {
+	s := store(t, time.Unix(1000, 0))
+	if _, err := s.Acquire("go-gitsafe/gitsafe", "alice", "", time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	var held *Held
+	if _, err := s.Acquire("gitsafe", "bob", "", time.Hour); !errors.As(err, &held) {
+		t.Errorf("bob claiming the bare name got %v; want a refusal", err)
+	}
+}
+
+// ⛔ What must NOT collide, or this fix costs more than it buys.
+//
+// A worktree topic is a second checkout of one repository, and sessions claim
+// those separately on purpose -- two agents working two topics of one repo is
+// the normal case on this machine, not a conflict. A deeper path is not a clone
+// directory at all. And an unrelated repository that merely contains a dash is
+// the case that would turn this into a fleet-wide false refusal.
+func TestWhatTheCloneDirectoryRuleMustNotSwallow(t *testing.T) {
+	for _, tc := range []struct{ held, wanted string }{
+		{"go-gitsafe/gitsafe", "go-gitsafe-gitsafe-githooks"}, // a worktree topic
+		{"go-gitsafe/gitsafe/cmd", "go-gitsafe-gitsafe-cmd"},  // a path is not a clone
+		{"go-tex/engine", "go-tex-tools"},                     // another repository
+		{"go-tex/engine", "engine-webengine"},                 // a live name from `claims`
+	} {
+		s := store(t, time.Unix(1000, 0))
+		if _, err := s.Acquire(tc.held, "alice", "", time.Hour); err != nil {
+			t.Fatalf("%s: %v", tc.held, err)
+		}
+		if _, err := s.Acquire(tc.wanted, "bob", "", time.Hour); err != nil {
+			t.Errorf("alice holds %s; bob claiming %s was refused: %v", tc.held, tc.wanted, err)
+		}
+	}
+}
+
+// The clone-directory rule is read against a name that already spells itself
+// `<owner>/<repo>`, and against nothing else. These are the inputs where it
+// must answer no although the dash form "looks" assembled from them: they come
+// from the one refusal inside dashNames, and a mutation sweep that erased that
+// refusal survived the whole suite until this test existed.
+func TestADashFormIsOnlyReadAgainstATwoPartName(t *testing.T) {
+	for _, tc := range []struct {
+		dashed, qualified string
+		why               string
+	}{
+		{"go-gitsafe-", "go-gitsafe", "no slash at all: there is no owner to join"},
+		{"-gitsafe", "/gitsafe", "an empty owner joins to a name starting in a dash"},
+		{"go-gitsafe-", "go-gitsafe/", "an empty repository joins to a trailing dash"},
+		{"go-tex-engine/cmd", "go-tex/engine/cmd", "a deeper path is not a clone directory"},
+	} {
+		if dashNames(tc.dashed, tc.qualified) {
+			t.Errorf("dashNames(%q, %q) = true; want false -- %s", tc.dashed, tc.qualified, tc.why)
+		}
+	}
+	// The control: the two-part name it exists for still answers yes.
+	if !dashNames("go-gitsafe-gitsafe", "go-gitsafe/gitsafe") {
+		t.Error("dashNames(go-gitsafe-gitsafe, go-gitsafe/gitsafe) = false; want true")
+	}
+}
+
+// The gates ask Covering, not Acquire: a session that claimed the clone
+// directory and then publishes into the repository must be recognised as the
+// holder, or the gate refuses the one session that did claim.
+func TestCoveringKnowsTheCloneDirectorySpelling(t *testing.T) {
+	s := store(t, time.Unix(1000, 0))
+	if _, err := s.Acquire("go-gitsafe-gitsafe", "alice", "", time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.Covering("go-gitsafe/gitsafe")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Owner != "alice" {
+		t.Errorf("Covering(go-gitsafe/gitsafe) = %+v; want alice's lease on the clone directory", got)
+	}
+	// And it still does not cover a topic checkout.
+	s2 := store(t, time.Unix(1000, 0))
+	if _, err := s2.Acquire("go-gitsafe-gitsafe-githooks", "alice", "", time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := s2.Covering("go-gitsafe/gitsafe"); err != nil || len(got) != 0 {
+		t.Errorf("a worktree topic covered the repository: %+v, %v", got, err)
+	}
+}
+
 func TestAnUnlistableDirectoryIsNotReadAsAConflict(t *testing.T) {
 	// A store whose directory does not exist yet has no leases in it, and a
 	// claim against it must go through rather than be refused by a listing

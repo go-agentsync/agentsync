@@ -249,19 +249,24 @@ func notSucceeded(raw []byte) string {
 	return ""
 }
 
-// mine returns this session's live leases that are about exactly this repository
-// -- its own, or the bare-name spelling of it -- and not the organisation
-// around it, which one merge says nothing about.
+// mine returns this session's live leases that are about exactly this
+// repository -- under any of its spellings -- and not the organisation around
+// it, which one merge says nothing about.
+//
+// ⛔ The spellings are lease.SameRepository's to decide, not this function's.
+// It used to match the qualified and bare names here, in its own copy of the
+// rule, and the copy fell behind: a lease taken under the clone directory name
+// `owner-repo` was refused to every other session and then never released by
+// the publish it was taken for, surviving until it went idle.
 func (g gateEnv) mine(repo string) []lease.Lease {
 	// A missing or unreadable claims directory, or a torn lease in it, comes back
 	// as an error with no leases: nothing is this session's, so nothing is released.
 	ls, _ := g.store.Covering(repo)
 	key := lease.Normalize(repo)
-	bare := key[strings.LastIndex(key, "/")+1:]
 	var out []lease.Lease
 	for _, l := range ls {
 		k := lease.Normalize(l.Resource)
-		if l.Owner == g.owner && !l.Expired(g.now()) && (k == key || k == bare) {
+		if l.Owner == g.owner && !l.Expired(g.now()) && lease.SameRepository(k, key) {
 			out = append(out, l)
 		}
 	}

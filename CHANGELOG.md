@@ -2,6 +2,51 @@
 
 ## Unreleased
 
+- **The clone directory is the same repository** (#23). `go-gitsafe/gitsafe` and
+  `go-gitsafe-gitsafe` were two leases, and on 2026-11-22 they were held *at the
+  same time, by two different sessions*, each believing it had coordinated — a
+  third reading `claims` saw two unrelated rows, and a subagent waiting for one
+  of them was queued behind the key that was not in use. `bareNames` could not
+  see this pair: the dash form has no slash, so its last segment is the whole
+  string, which is why the collision outlived the fix that predicate was written
+  for. ⛔ The comparison is an **exact equality against a lease that already
+  exists** (`owner + "-" + repo`), never a split of the dashed name —
+  `go-tex-engine` reads as either `go-tex/engine` or `go/tex-engine`, and
+  splitting it would invent an owner. A worktree topic
+  (`go-gitsafe-gitsafe-githooks`), a deeper path and an unrelated repository
+  carrying a dash are all left alone, each with a test. `Covering` learned the
+  same spelling, so a session that claimed the clone directory is recognised as
+  the holder when it publishes.
+- **A refusal names the spelling the holder used** when it differs from the one
+  asked for. `held by 6899659a` is not an address: the row in `claims` is under
+  the holder's own words, and a session that cannot find it concludes the lease
+  is stale. This is the half that cost a subagent its wait, not the collision
+  itself.
+- **A publish releases the lease under whichever spelling it was taken.** Found
+  by an adversarial review of the branch above, and it was that branch's own
+  doing: the publish gate carried a *second copy* of the spelling rule, matching
+  the qualified and bare names only. So a session claiming `go-gitsafe-gitsafe`
+  had its claim refused to everyone else — the new rule working — and then kept
+  the lease through every merge it was taken for, until it went idle. The rule
+  now lives once, as `lease.SameRepository`, and the gate asks it. ⛔ The lesson
+  is not the dash form: it is that making two names equal in one place and not
+  the other is worse than leaving them unequal everywhere, because the half that
+  grants and the half that releases disagree about what is held.
+- **The spelling line speaks for the names `Normalize` unifies.** It was first
+  guarded by a *normalised* comparison, so it fell silent for exactly the pairs
+  normalisation makes equal — a holder on `github.com/go-gitsafe/gitsafe`,
+  `go-gitsafe/gitsafe.git`, `git@github.com:go-gitsafe/gitsafe` or a different
+  case, against a plain `go-gitsafe/gitsafe`. Those are the rows a refused
+  session is *least* able to recognise, because `claims` prints the resource as
+  the holder wrote it. The comparison is raw now: the question is whether the
+  reader will recognise the row, and that is about the text.
+- Not closed by this: a bare name whose owner is unknown to the store still
+  stands as its own resource, because a name without a slash is a legitimate
+  worktree topic here and nothing in it says who the owner is. #23 stays open
+  for that half.
+
+## v0.13.1
+
 - ⛔ **v0.13.0 could not be installed, and nothing here could have noticed.**
   The seed `lease/testdata/fuzz/FuzzNormalizePath/nul`, named after the input it
   holds, is a path the Go module zip format refuses: `nul` is a reserved Windows

@@ -222,6 +222,65 @@ func bareNames(bare, qualified string) bool {
 	return len(segs) > 1 && segs[len(segs)-1] == bare
 }
 
+// dashNames reports whether dashed is the CLONE DIRECTORY spelling of
+// qualified: "go-gitsafe-gitsafe" for "go-gitsafe/gitsafe".
+//
+// ⛔ MEASURED LIVE, 2026-11-22 ~23:00: `go-gitsafe/gitsafe` held by one session
+// and `go-gitsafe-gitsafe` by another, at the same time, on this machine. A
+// subagent then waited for the first while the second was the lease that
+// mattered, so it queued behind the wrong key. bareNames does not see this pair
+// -- the dash form has no slash, and its last segment is the whole string --
+// which is why the collision survived the fix that bareNames was written for.
+//
+// The convention it reads is `~/Documents/VCS/GIT/localhost/<org>-<repo>` (this
+// machine's layout), which is the name a session has IN FRONT OF IT while
+// working, and therefore the name it reaches for.
+//
+// ⛔ The comparison is an EXACT equality against a key that already exists, not
+// a split of the dash form. "go-tex-engine" could be read as go-tex/engine or
+// go/tex-engine, and nothing in the string says which; splitting it would
+// invent an owner. Asking instead whether some LIVE lease spells itself o/r
+// such that o+"-"+r is this name cannot invent anything, and when two live
+// leases both match, refusing against either is still correct -- the point is
+// that the session is told to go and look.
+//
+// A deeper path is not a clone directory: "a/b/c" has no `<org>-<repo>` form,
+// so it is left alone. Nor is a worktree TOPIC: `<org>-<repo>-<topic>` is how
+// this machine names a second checkout of one repository, and sessions claim
+// those separately on purpose, so only the exact two-part name collides.
+//
+// ⛔ There is deliberately NO `strings.Contains(dashed, "/")` guard, although
+// bareNames has one: by the time the comparison runs, owner holds what precedes
+// the first slash and repo has been refused if it holds another, so owner+"-"+
+// repo contains no slash at all and a dashed form that holds one cannot equal
+// it. A mutation sweep said so before this comment did -- the guard SURVIVED,
+// because nothing it did could change an answer.
+func dashNames(dashed, qualified string) bool {
+	owner, repo, ok := strings.Cut(qualified, "/")
+	if !ok || owner == "" || repo == "" || strings.Contains(repo, "/") {
+		return false
+	}
+	return dashed == owner+"-"+repo
+}
+
+// SameRepository reports whether two NORMALISED keys name one repository under
+// the spellings this machine produces: the qualified `owner/repo`, the bare
+// `repo`, and the clone directory `owner-repo`. It is symmetric, and it is
+// deliberately NOT `covers`: an organisation encloses a repository without
+// being it, and a caller asking "is this lease about exactly this repository"
+// must not be handed the lease on everything around it.
+//
+// ⛔ It exists because the publish gate had its own copy of the rule, matching
+// the qualified and bare forms only, and so never released a lease taken under
+// the clone directory name: the spellings were made equal for CLAIMING in one
+// place and left unequal for RELEASING in another. One repository's spellings
+// are decided here, once, and every caller asks this.
+func SameRepository(a, b string) bool {
+	return a == b ||
+		bareNames(a, b) || bareNames(b, a) ||
+		dashNames(a, b) || dashNames(b, a)
+}
+
 // overlapping reports a live lease that encloses this resource or sits inside
 // it, held by somebody else.
 //
@@ -261,7 +320,8 @@ func (s Store) overlapping(target, key, owner string, now time.Time) *Lease {
 		if l.Owner == owner || l.Takeable(now, s.Idle) {
 			continue
 		}
-		if covers(k, key) || covers(key, k) || bareNames(k, key) || bareNames(key, k) {
+		if covers(k, key) || covers(key, k) || bareNames(k, key) || bareNames(key, k) ||
+			dashNames(k, key) || dashNames(key, k) {
 			held := l
 			return &held
 		}
@@ -477,7 +537,11 @@ func (s Store) Covering(resource string) ([]Lease, error) {
 			return nil, fmt.Errorf("lease %s is unreadable: %w", e.Name(), err)
 		}
 		k := Normalize(l.Resource)
-		if covers(k, key) || bareNames(k, key) {
+		// dashNames in this direction only: a lease written as the clone
+		// directory ("go-gitsafe-gitsafe") covers a publish into the repository
+		// it is a checkout of. The other direction would be a lease on the
+		// repository covering a question about a directory, which no gate asks.
+		if covers(k, key) || bareNames(k, key) || dashNames(k, key) {
 			out = append(out, l)
 		}
 	}
