@@ -323,13 +323,40 @@ func sessionGone(projects, sessionID string, now func() time.Time, grace time.Du
 	if err != nil {
 		return nil
 	}
-	if info, err := statFile(filepath.Join(dir, sessionID+".jsonl")); err == nil {
-		if silent := now().Sub(info.ModTime()); silent > grace {
-			return fmt.Errorf("%w: its transcript has been silent for %s (limit %s)", errRequesterGone, silent.Round(time.Second), grace)
+	newest, ok := mtime(filepath.Join(dir, sessionID+".jsonl"))
+	if !ok {
+		return nil
+	}
+	// A subagent inherits the parent's session id but writes to
+	// <dir>/<sessionID>/subagents/agent-*.jsonl: its work is the session's.
+	subs, _ := filepath.Glob(filepath.Join(dir, sessionID, "subagents", "*.jsonl"))
+	if len(subs) > maxSubagentStats {
+		subs = subs[:maxSubagentStats]
+	}
+	for _, s := range subs {
+		if t, ok := mtime(s); ok && t.After(newest) {
+			newest = t
 		}
+	}
+	if silent := now().Sub(newest); silent > grace {
+		return fmt.Errorf("%w: its transcript has been silent for %s (limit %s)", errRequesterGone, silent.Round(time.Second), grace)
 	}
 	return nil
 }
+
+// mtime is the modification time of path, and false when it cannot be read.
+func mtime(path string) (time.Time, bool) {
+	info, err := statFile(path)
+	var t time.Time
+	if err == nil && info != nil {
+		t = info.ModTime()
+	}
+	return t, !t.IsZero()
+}
+
+// maxSubagentStats bounds the subagent transcripts whose mtime is read.
+// A var so a test can lower it instead of writing a thousand files.
+var maxSubagentStats = 1000
 
 // describe is the activity part of a `claims` line.
 func describe(l lease.Lease, now time.Time, idle time.Duration) string {

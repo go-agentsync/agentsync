@@ -335,6 +335,55 @@ func TestDescribeShowsIdleAndKeep(t *testing.T) {
 	}
 }
 
+// A subagent writes under <sid>/subagents/, not to the parent transcript.
+func TestASessionWithAFreshSubagentIsNotGone(t *testing.T) {
+	projects := t.TempDir()
+	dir := filepath.Join(projects, "-some-project")
+	const sid = "55555555-aaaa-bbbb-cccc-000000000005"
+	subdir := filepath.Join(dir, sid, "subagents")
+	if err := os.MkdirAll(subdir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	tr := filepath.Join(dir, sid+".jsonl")
+	sub := filepath.Join(subdir, "agent-abc.jsonl")
+	for _, p := range []string{tr, sub} {
+		if err := os.WriteFile(p, []byte("{}\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	now := time.Now()
+	clock := func() time.Time { return now }
+	grace := 12 * time.Minute
+	old := now.Add(-grace - time.Minute)
+	if err := os.Chtimes(tr, old, old); err != nil {
+		t.Fatal(err)
+	}
+	if err := sessionGone(projects, sid, clock, grace); err != nil {
+		t.Fatalf("a fresh subagent keeps the session alive: %v", err)
+	}
+	if err := os.Chtimes(sub, old, old); err != nil {
+		t.Fatal(err)
+	}
+	if err := sessionGone(projects, sid, clock, grace); err == nil {
+		t.Fatal("parent and subagents all silent must read as gone")
+	}
+	// Only the first maxSubagentStats files are read (glob order is sorted).
+	fresh := filepath.Join(subdir, "agent-zzz.jsonl")
+	if err := os.WriteFile(fresh, []byte("{}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	oldMax := maxSubagentStats
+	maxSubagentStats = 1
+	t.Cleanup(func() { maxSubagentStats = oldMax })
+	if err := sessionGone(projects, sid, clock, grace); err == nil {
+		t.Fatal("a subagent past the bound is not read")
+	}
+	maxSubagentStats = oldMax
+	if err := sessionGone(projects, sid, clock, grace); err != nil {
+		t.Fatalf("within the bound it is read: %v", err)
+	}
+}
+
 // Variant (c): a background `claim --wait` whose session has ended.
 func TestAWaitForAnEndedSessionIsDropped(t *testing.T) {
 	projects := t.TempDir()

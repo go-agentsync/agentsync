@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **A subagent's activity keeps its session alive.** `claim -wait` dropped a
+  subagent's wait once the parent transcript had been quiet for the grace
+  period, because the subagent writes to `<session>/subagents/agent-*.jsonl`,
+  which `sessionGone` never read. The newest mtime of the main transcript and
+  the subagent transcripts (at most 1000 stats) now counts.
+
 - **The clone directory is the same repository** (#23). `go-gitsafe/gitsafe` and
   `go-gitsafe-gitsafe` were two leases, and on 2026-11-22 they were held *at the
   same time, by two different sessions*, each believing it had coordinated — a
