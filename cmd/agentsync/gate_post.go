@@ -323,13 +323,31 @@ func sessionGone(projects, sessionID string, now func() time.Time, grace time.Du
 	if err != nil {
 		return nil
 	}
-	if info, err := statFile(filepath.Join(dir, sessionID+".jsonl")); err == nil {
-		if silent := now().Sub(info.ModTime()); silent > grace {
-			return fmt.Errorf("%w: its transcript has been silent for %s (limit %s)", errRequesterGone, silent.Round(time.Second), grace)
+	info, err := statFile(filepath.Join(dir, sessionID+".jsonl"))
+	if err != nil {
+		return nil
+	}
+	newest := info.ModTime()
+	// A subagent inherits the parent's session id but writes to
+	// <dir>/<sessionID>/subagents/agent-*.jsonl: its work is the session's.
+	subs, _ := filepath.Glob(filepath.Join(dir, sessionID, "subagents", "*.jsonl"))
+	if len(subs) > maxSubagentStats {
+		subs = subs[:maxSubagentStats]
+	}
+	for _, s := range subs {
+		if si, err := statFile(s); err == nil && si.ModTime().After(newest) {
+			newest = si.ModTime()
 		}
+	}
+	if silent := now().Sub(newest); silent > grace {
+		return fmt.Errorf("%w: its transcript has been silent for %s (limit %s)", errRequesterGone, silent.Round(time.Second), grace)
 	}
 	return nil
 }
+
+// maxSubagentStats bounds the subagent transcripts whose mtime is read.
+// A var so a test can lower it instead of writing a thousand files.
+var maxSubagentStats = 1000
 
 // describe is the activity part of a `claims` line.
 func describe(l lease.Lease, now time.Time, idle time.Duration) string {
