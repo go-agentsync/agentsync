@@ -347,10 +347,11 @@ func sessionGone(projects, sessionID string, now func() time.Time, grace time.Du
 // mtime is the modification time of path, and false when it cannot be read.
 func mtime(path string) (time.Time, bool) {
 	info, err := statFile(path)
-	if info == nil || err != nil {
-		return time.Time{}, false
+	var t time.Time
+	if err == nil && info != nil {
+		t = info.ModTime()
 	}
-	return info.ModTime(), true
+	return t, !t.IsZero()
 }
 
 // maxSubagentStats bounds the subagent transcripts whose mtime is read.
