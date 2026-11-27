@@ -323,11 +323,10 @@ func sessionGone(projects, sessionID string, now func() time.Time, grace time.Du
 	if err != nil {
 		return nil
 	}
-	info, err := statFile(filepath.Join(dir, sessionID+".jsonl"))
-	if err != nil {
+	newest, ok := mtime(filepath.Join(dir, sessionID+".jsonl"))
+	if !ok {
 		return nil
 	}
-	newest := info.ModTime()
 	// A subagent inherits the parent's session id but writes to
 	// <dir>/<sessionID>/subagents/agent-*.jsonl: its work is the session's.
 	subs, _ := filepath.Glob(filepath.Join(dir, sessionID, "subagents", "*.jsonl"))
@@ -335,14 +334,23 @@ func sessionGone(projects, sessionID string, now func() time.Time, grace time.Du
 		subs = subs[:maxSubagentStats]
 	}
 	for _, s := range subs {
-		if si, err := statFile(s); err == nil && si.ModTime().After(newest) {
-			newest = si.ModTime()
+		if t, ok := mtime(s); ok && t.After(newest) {
+			newest = t
 		}
 	}
 	if silent := now().Sub(newest); silent > grace {
 		return fmt.Errorf("%w: its transcript has been silent for %s (limit %s)", errRequesterGone, silent.Round(time.Second), grace)
 	}
 	return nil
+}
+
+// mtime is the modification time of path, and false when it cannot be read.
+func mtime(path string) (time.Time, bool) {
+	info, err := statFile(path)
+	if err != nil {
+		return time.Time{}, false
+	}
+	return info.ModTime(), true
 }
 
 // maxSubagentStats bounds the subagent transcripts whose mtime is read.
