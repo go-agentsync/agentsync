@@ -32,6 +32,14 @@
   is not the dash form: it is that making two names equal in one place and not
   the other is worse than leaving them unequal everywhere, because the half that
   grants and the half that releases disagree about what is held.
+- **The spelling line speaks for the names `Normalize` unifies.** It was first
+  guarded by a *normalised* comparison, so it fell silent for exactly the pairs
+  normalisation makes equal — a holder on `github.com/go-gitsafe/gitsafe`,
+  `go-gitsafe/gitsafe.git`, `git@github.com:go-gitsafe/gitsafe` or a different
+  case, against a plain `go-gitsafe/gitsafe`. Those are the rows a refused
+  session is *least* able to recognise, because `claims` prints the resource as
+  the holder wrote it. The comparison is raw now: the question is whether the
+  reader will recognise the row, and that is about the text.
 - Not closed by this: a bare name whose owner is unknown to the store still
   stands as its own resource, because a name without a slash is a legitimate
   worktree topic here and nothing in it says who the owner is. #23 stays open

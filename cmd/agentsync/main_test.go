@@ -278,6 +278,34 @@ func TestARefusalNamesTheSpellingTheHolderUsed(t *testing.T) {
 	}
 }
 
+// ⛔ The line was first guarded by a NORMALISED comparison, which silenced it
+// for exactly the pairs Normalize unifies -- and those are the rows a refused
+// session is least able to recognise, because `claims` prints the resource as
+// the holder wrote it. A remote URL and the plain name are the same lease and
+// two different-looking rows.
+func TestTheSpellingLineSpeaksForTheNamesNormalizeUnifies(t *testing.T) {
+	for _, tc := range []struct{ holder, asked string }{
+		{"github.com/go-gitsafe/gitsafe", "go-gitsafe/gitsafe"},
+		{"go-gitsafe/gitsafe.git", "go-gitsafe/gitsafe"},
+		{"git@github.com:go-gitsafe/gitsafe", "go-gitsafe/gitsafe"},
+		{"GO-Gitsafe/gitsafe", "go-gitsafe/gitsafe"},
+	} {
+		sandbox(t, "alice-1111")
+		if err := claim([]string{tc.holder}); err != nil {
+			t.Fatalf("alice claiming %q: %v", tc.holder, err)
+		}
+		t.Setenv("AGENTSYNC_OWNER", "bob-2222")
+		var err error
+		out := capture(t, func() { err = claim([]string{tc.asked}) })
+		if err == nil {
+			t.Fatalf("holder %q: bob claiming %q was allowed", tc.holder, tc.asked)
+		}
+		if !strings.Contains(out, fmt.Sprintf("as %q", tc.holder)) {
+			t.Errorf("holder %q: the refusal does not name the row in `claims`:\n%s", tc.holder, out)
+		}
+	}
+}
+
 // ⛔⛔ "." NAMES WHERE YOU ARE STANDING AND NOTHING ELSE SEES THE SAME PLACE.
 //
 // Measured 2026-11-22, both live in the shared store on the same day: `.` held

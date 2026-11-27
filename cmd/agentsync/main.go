@@ -816,7 +816,15 @@ func claim(args []string) error {
 			// leaves the refused session unable to find the row in `claims` --
 			// which is how a subagent came to wait on a key nobody was using
 			// (2026-11-22). The holder's own words are the address.
-			if lease.Normalize(held.By.Resource) != lease.Normalize(r) {
+			//
+			// ⛔ The comparison is RAW, not normalised. `claims` prints the
+			// resource as the holder wrote it, so the question here is "will
+			// the refused session recognise that row", and the answer is about
+			// the TEXT. A normalised comparison stays silent for exactly the
+			// pairs Normalize unifies -- `github.com/o/r` against `o/r`,
+			// `o/r.git`, `git@github.com:o/r`, a different case -- which are
+			// the rows hardest to recognise, and the ones this line exists for.
+			if held.By.Resource != r {
 				fmt.Printf("         as %q -- the same resource under another spelling; that is the name in `claims`\n",
 					held.By.Resource)
 			}
