@@ -347,7 +347,7 @@ func sessionGone(projects, sessionID string, now func() time.Time, grace time.Du
 // mtime is the modification time of path, and false when it cannot be read.
 func mtime(path string) (time.Time, bool) {
 	info, err := statFile(path)
-	if err != nil {
+	if info == nil || err != nil {
 		return time.Time{}, false
 	}
 	return info.ModTime(), true
