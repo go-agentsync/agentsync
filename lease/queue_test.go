@@ -98,6 +98,42 @@ func TestALiveHolderIsStillReportedAsHeld(t *testing.T) {
 	}
 }
 
+// nameless puts bob in o/r's line as a binary from before Waiter.Resource wrote
+// him: such a place counts whatever blocks it, so it reaches the branches of
+// Acquire that a named, ungrantable waiter no longer does.
+func nameless(t *testing.T, s Store, at time.Time) {
+	t.Helper()
+	if err := s.writeQueue(s.queuePath("o/r"), []Waiter{{Owner: "bob", Since: at, Until: at.Add(time.Hour)}}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestALiveHolderIsHeldEvenBeforeANamelessWaiter(t *testing.T) {
+	t0 := time.Unix(1000, 0)
+	s, _ := clocked(t, t0)
+	if _, err := s.Acquire("o/r", "alice", "", time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	nameless(t, s, t0)
+	_, err := s.Acquire("o/r", "carol", "", time.Minute)
+	var held *Held
+	if !errors.As(err, &held) || held.By.Owner != "alice" {
+		t.Fatalf("got %v, want Held by alice", err)
+	}
+}
+
+func TestAHolderExtendsPastANamelessWaiter(t *testing.T) {
+	t0 := time.Unix(1000, 0)
+	s, _ := clocked(t, t0)
+	if _, err := s.Acquire("o/r", "alice", "", time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	nameless(t, s, t0)
+	if _, err := s.Acquire("o/r", "alice", "renewed", time.Hour); err != nil {
+		t.Fatalf("alice could not extend her own lease with bob in line: %v", err)
+	}
+}
+
 // Extending one's own lease takes nothing from anybody in line.
 func TestAHolderExtendingItsOwnLeaseJumpsNobody(t *testing.T) {
 	t0 := time.Unix(1000, 0)
