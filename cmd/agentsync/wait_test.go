@@ -272,6 +272,10 @@ func TestAClaimAtTheLapseIsRefusedWithTheLine(t *testing.T) {
 	if err != nil || !strings.Contains(out, "in line: bob-2222 since") {
 		t.Errorf("claims does not show bob next (%v):\n%s", err, out)
 	}
+	// Its line is printed once, under alice's row, not again as a free resource.
+	if strings.Contains(out, "nobody holds it") || strings.Count(out, "in line:") != 1 {
+		t.Errorf("a held resource's line was printed as a free one too:\n%s", out)
+	}
 }
 
 func TestClaimsSaysWhenTheLineCannotBeRead(t *testing.T) {
