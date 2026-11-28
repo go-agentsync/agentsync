@@ -131,7 +131,7 @@ func (s Store) Wait(resource, owner string, until time.Time) (int, error) {
 	}
 	// Counted after the lock is released: the line spans other queue files,
 	// which have their own locks, and a count is advice, not a grant.
-	line, err := s.waitersAhead(resource, owner, now)
+	line, err := s.waitersAhead(resource, owner, now, true)
 	return len(line), err
 }
 
@@ -168,12 +168,16 @@ func (s Store) place(resource, owner string, until, now time.Time) error {
 	return s.writeQueue(qp, ws)
 }
 
-// Leave takes owner out of the line for resource, under EVERY spelling that is
-// one claim with it. Leaving a line one is not in is not an error.
+// Leave takes owner out of the line for resource, under every spelling of it
+// and for everything it encloses. Leaving a line one is not in is not an error.
 //
 // ⛔ Every spelling (review of #53): a session that waited as
 // go-gitsafe/gitsafe and won as gitsafe left only the second line, and its old
 // place then held the next waiter back after it had released.
+//
+// ⛔ But NOT what encloses it (review of #53, round 3): a session waiting for
+// the organisation go-x that claimed go-x/a lost its place for go-x, which
+// getting go-x/a did not give it.
 func (s Store) Leave(resource, owner string) error {
 	own := s.queuePath(resource)
 	if err := s.leaveIn(own, owner); err != nil {
@@ -182,7 +186,10 @@ func (s Store) Leave(resource, owner string) error {
 	key := Normalize(resource)
 	for qp, ws := range s.otherQueues(own) {
 		for _, w := range ws {
-			if w.Owner == owner && w.Resource != "" && overlaps(Normalize(w.Resource), key) {
+			if w.Owner != owner || w.Resource == "" {
+				continue
+			}
+			if wk := Normalize(w.Resource); covers(key, wk) || SameRepository(key, wk) {
 				// Best effort, as the own line's is not: that one is the line
 				// the caller named.
 				_ = s.leaveIn(qp, owner)
@@ -262,9 +269,19 @@ func ahead(ws []Waiter, owner string) []Waiter {
 // the organisation go-x, blocked by a live lease on go-x/b, otherwise froze
 // every FREE repository of go-x for as long as go-x/b was held -- a waiter that
 // cannot take what it waits for must not stop others taking what nobody holds.
-// A waiter for the same key is blocked by whatever blocks this caller, so it
-// always counts.
-func (s Store) waitersAhead(resource, owner string, now time.Time) ([]Waiter, error) {
+//
+// ⛔ That holds for a waiter for the SAME key too (review of #53, round 3): a
+// lease of someone else's that blocks it would have refused this caller as Held
+// before the line was read, so what still blocks it is the caller's own lease
+// -- carol holding `gitsafe` was QUEUED, asking for go-gitsafe/gitsafe, behind
+// bob, who waited only because of her.
+//
+// The price is that a waiter for an organisation is served best effort: claims
+// on its free repositories keep being granted while one of them is held.
+//
+// position is for Wait's count, read while the resource is still held: nobody
+// ahead can be granted it then, yet a waiter for the same key is still ahead.
+func (s Store) waitersAhead(resource, owner string, now time.Time, position bool) ([]Waiter, error) {
 	merged, err := s.merged(resource)
 	if err != nil {
 		return nil, err
@@ -272,7 +289,7 @@ func (s Store) waitersAhead(resource, owner string, now time.Time) ([]Waiter, er
 	key := Normalize(resource)
 	var line []Waiter
 	for _, w := range live(merged, now) {
-		if w.Resource == "" || Normalize(w.Resource) == key || s.grantable(w, now) {
+		if w.Resource == "" || (position && Normalize(w.Resource) == key) || s.grantable(w, now) {
 			line = append(line, w)
 		}
 	}

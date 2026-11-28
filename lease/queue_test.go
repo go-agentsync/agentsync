@@ -534,6 +534,39 @@ func TestAWaiterForWhatTheCallerHoldsDoesNotBlockIt(t *testing.T) {
 	}
 }
 
+// ⛔ Review of #53, round 3, CONFIRMED: bob waits for go-gitsafe/gitsafe only
+// because carol holds `gitsafe`; carol re-spelling her own claim was QUEUED.
+func TestAHolderIsNotQueuedBehindAWaiterOnlyItBlocks(t *testing.T) {
+	t0 := time.Unix(1000, 0)
+	s, _ := clocked(t, t0)
+	if _, err := s.Acquire("gitsafe", "carol", "", time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	mustWait(t, s, "go-gitsafe/gitsafe", "bob", t0.Add(time.Hour))
+	if l, err := s.Acquire("go-gitsafe/gitsafe", "carol", "", time.Hour); err != nil || l.Owner != "carol" {
+		t.Fatalf("carol, re-spelling her own claim, got %+v, %v", l, err)
+	}
+}
+
+// ⛔ Review of #53, round 3, CONFIRMED: claiming go-x/a dropped the session's
+// place for the organisation go-x, which go-x/a does not give it.
+func TestClaimingARepositoryKeepsAPlaceForItsOrganisation(t *testing.T) {
+	t0 := time.Unix(1000, 0)
+	s, now := clocked(t, t0)
+	mustWait(t, s, "go-x", "bob", t0.Add(time.Hour))
+	*now = t0.Add(time.Second)
+	mustWait(t, s, "go-x/a", "bob", t0.Add(time.Hour))
+	if _, err := s.Acquire("go-x/a", "bob", "", time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	if q, err := s.Queue("go-x"); err != nil || len(q) != 1 || q[0].Owner != "bob" {
+		t.Errorf("Queue(go-x) after bob got go-x/a = %+v, %v; want bob kept", q, err)
+	}
+	if q, err := s.Queue("go-x/a"); err != nil || len(q) != 0 {
+		t.Errorf("Queue(go-x/a) after bob got it = %+v, %v; want empty", q, err)
+	}
+}
+
 func TestOverlapsIsOneClaim(t *testing.T) {
 	for _, c := range []struct {
 		a, b string

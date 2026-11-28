@@ -392,7 +392,7 @@ func (s Store) AcquireKeep(resource, owner, note, keep string, ttl time.Duration
 	// get a lease that is free or takeable before this one does. A live lease
 	// held by someone else is still reported as Held -- who holds it is the more
 	// useful answer -- and a holder extending its own lease jumps nobody.
-	line, err := s.waitersAhead(resource, owner, now)
+	line, err := s.waitersAhead(resource, owner, now, false)
 	if err != nil {
 		return Lease{}, err
 	}

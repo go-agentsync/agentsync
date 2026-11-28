@@ -146,7 +146,10 @@ Each is now a tool's job:
   `o`), and a holder whose own lease expired or went idle queues like anyone. A
   waiter for another spelling counts only while it could be granted what it
   waits for: one waiting for the organisation `o`, blocked by a lease on `o/b`,
-  does not stop anyone taking a free `o/a`. A place lives three retries (at
+  does not stop anyone taking a free `o/a` — so a wait for an organisation is
+  best effort, and claims on its free repositories can keep overtaking it.
+  Winning a lease leaves the line for it under every spelling and for what it
+  encloses, never for what encloses it. A place lives three retries (at
   least 3 minutes, at most 10) and never more than 3 minutes past its wait's
   deadline, so running `claim --wait` again right after a deadline keeps it,
   while a waiter that stopped or died blocks a free resource for at most those
