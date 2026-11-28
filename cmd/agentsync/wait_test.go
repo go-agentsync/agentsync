@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -147,6 +149,282 @@ func TestNothingToWaitForIsSilent(t *testing.T) {
 	}
 	if out.Len() != 0 {
 		t.Errorf("said %q with nobody holding it", out.String())
+	}
+}
+
+// ⛔ The race that lost go-fleettools/fleettools nine times running
+// (2026-11-27/28): bob's 9-minute wait ends while alice still holds the lease,
+// alice's lease lapses, a newcomer asks first. Before the queue the newcomer
+// won; now bob's place survives his deadline, the newcomer is QUEUED, and bob's
+// next wait takes it on its first attempt.
+func TestAWaiterKeepsItsTurnAcrossItsOwnDeadline(t *testing.T) {
+	s, c := waiting(t, time.Unix(1000, 0))
+	if _, err := s.Acquire("o/r", "alice", "", 70*time.Second); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	_, err := waitAcquire(s, "o/r", "bob", "", time.Hour, time.Minute, 15*time.Second, c.now, c.sleep, &out)
+	var held *lease.Held
+	if !errors.As(err, &held) {
+		t.Fatalf("bob's first wait ended with %v, want Held by alice", err)
+	}
+	if !strings.Contains(out.String(), "0 session(s) ahead of you") {
+		t.Errorf("the wait did not say bob's place in line:\n%s", out.String())
+	}
+
+	c.t = c.t.Add(15 * time.Second) // alice's lease has lapsed; bob is between waits
+	_, err = s.Acquire("o/r", "dave", "", time.Hour)
+	var queued *lease.Queued
+	if !errors.As(err, &queued) || queued.Ahead[0].Owner != "bob" {
+		t.Fatalf("dave, arriving first, got %v; want QUEUED behind bob", err)
+	}
+
+	c.slept = nil
+	l, err := waitAcquire(s, "o/r", "bob", "", time.Hour, time.Minute, 15*time.Second, c.now, c.sleep, &out)
+	if err != nil || l.Owner != "bob" {
+		t.Fatalf("bob's second wait: %+v, %v", l, err)
+	}
+	if len(c.slept) != 0 {
+		t.Errorf("bob slept %v: first in line, he should get it on the first attempt", c.slept)
+	}
+}
+
+// A waiter whose session has gone leaves the line at once, rather than make
+// the next one wait for its place to lapse.
+func TestAGoneWaiterLeavesTheLine(t *testing.T) {
+	s, c := waiting(t, time.Unix(1000, 0))
+	if _, err := s.Acquire("o/r", "alice", "", time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	gone := errors.New("gone")
+	var out bytes.Buffer
+	_, err := waitAcquireFor(s, "o/r", "bob", "", "", time.Hour, time.Hour, 15*time.Second, c.now, c.sleep, &out,
+		func() error {
+			calls++
+			if calls > 1 {
+				return gone
+			}
+			return nil
+		})
+	if !errors.Is(err, gone) {
+		t.Fatalf("got %v, want the requester's error", err)
+	}
+	if q, err := s.Queue("o/r"); err != nil || len(q) != 0 {
+		t.Errorf("line after bob went = %+v, %v; want empty", q, err)
+	}
+}
+
+// ⛔ A wait that cannot take its place in line is not waiting its turn: it
+// would poll for the whole deadline with nobody keeping its place, which is the
+// lottery this replaced. It comes straight back with the reason.
+func TestAWaitThatCannotTakeItsPlaceSaysSo(t *testing.T) {
+	s, c := waiting(t, time.Unix(1000, 0))
+	if _, err := s.Acquire("solo", "alice", "", time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	// Taking a place fails while the lease itself still answers Held.
+	saved := waitPlace
+	waitPlace = func(lease.Store, string, string, time.Time) (int, error) { return 0, errors.New("injected") }
+	t.Cleanup(func() { waitPlace = saved })
+	var out bytes.Buffer
+	_, err := waitAcquire(s, "solo", "bob", "", time.Hour, time.Hour, 15*time.Second, c.now, c.sleep, &out)
+	var held *lease.Held
+	if err == nil || errors.As(err, &held) {
+		t.Fatalf("got %v, want the failure to take a place", err)
+	}
+	if len(c.slept) != 0 {
+		t.Errorf("slept %v without a place in line", c.slept)
+	}
+}
+
+// agentsync#42's acceptance: waiters A then B, and a C that never waited
+// claiming right at the lapse. A gets it, B is next, C is refused with the line.
+func TestAClaimAtTheLapseIsRefusedWithTheLine(t *testing.T) {
+	sandbox(t, "alice-1111")
+	s := store()
+	if _, err := s.Acquire("o/r", "holder-0000", "", -time.Second); err != nil { // already lapsed
+		t.Fatal(err)
+	}
+	mustPlace(t, s, "o/r", "alice-1111")
+	mustPlace(t, s, "o/r", "bob-2222")
+
+	t.Setenv("AGENTSYNC_OWNER", "carol-3333")
+	var err error
+	out := capture(t, func() { err = claim([]string{"o/r"}) })
+	if err == nil {
+		t.Fatalf("carol, who never waited, took the lease from the line:\n%s", out)
+	}
+	for _, want := range []string{"QUEUED   o/r", "2 session(s) waited longer", "alice-11", "bob-2222", "claim --wait"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("the refusal does not say %q:\n%s", want, out)
+		}
+	}
+	if strings.Index(out, "alice-11") > strings.Index(out, "bob-2222") {
+		t.Errorf("the line is not printed in order:\n%s", out)
+	}
+
+	t.Setenv("AGENTSYNC_OWNER", "alice-1111")
+	if err := claim([]string{"o/r"}); err != nil {
+		t.Fatalf("alice, first in line: %v", err)
+	}
+	out = capture(t, func() { err = claims(nil) })
+	if err != nil || !strings.Contains(out, "in line: bob-2222 since") {
+		t.Errorf("claims does not show bob next (%v):\n%s", err, out)
+	}
+	// Its line is printed once, under alice's row, not again as a free resource.
+	if strings.Contains(out, "nobody holds it") || strings.Count(out, "in line:") != 1 {
+		t.Errorf("a held resource's line was printed as a free one too:\n%s", out)
+	}
+}
+
+func TestClaimsSaysWhenTheLineCannotBeRead(t *testing.T) {
+	sandbox(t, "alice-1111")
+	s := store()
+	if _, err := s.Acquire("solo", "alice-1111", "", time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(s.Dir, "solo.queue"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	var err error
+	out := capture(t, func() { err = claims(nil) })
+	if err != nil || !strings.Contains(out, "in line: unreadable") {
+		t.Errorf("an unreadable line was not reported (%v):\n%s", err, out)
+	}
+}
+
+// A wait that begins on a FREE lease another session is ahead for says so,
+// rather than naming a holder there is none of.
+func TestAWaitBehindTheLineSaysItIsNotYourTurn(t *testing.T) {
+	s, c := waiting(t, time.Unix(1000, 0))
+	if _, err := s.Wait("o/r", "alice", c.now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	_, err := waitAcquire(s, "o/r", "bob", "", time.Hour, time.Minute, 15*time.Second, c.now, c.sleep, &out)
+	var queued *lease.Queued
+	if !errors.As(err, &queued) {
+		t.Fatalf("got %v, want QUEUED behind alice", err)
+	}
+	for _, want := range []string{"free, but it is not your turn", "1 session(s) ahead of you"} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("the wait does not say %q:\n%s", want, out.String())
+		}
+	}
+}
+
+func mustPlace(t *testing.T, s lease.Store, resource, owner string) {
+	t.Helper()
+	if _, err := s.Wait(resource, owner, time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A place lives three retries, never under a minute -- and never more than a
+// minute past the wait's own deadline.
+func TestAPlaceLivesThreeRetriesButNotPastTheWait(t *testing.T) {
+	now := time.Unix(1000, 0)
+	for _, tc := range []struct {
+		every, wait, want time.Duration // want is from now
+	}{
+		{time.Second, time.Hour, 3 * time.Minute},             // floor: placeGrace
+		{15 * time.Second, time.Hour, 3 * time.Minute},        // the default --every
+		{time.Minute, time.Hour, 3 * time.Minute},             // three retries = the floor
+		{61 * time.Second, time.Hour, 183 * time.Second},      // three retries
+		{time.Hour, 9 * time.Hour, 10 * time.Minute},          // ceiling: placeMax
+		{time.Hour, time.Minute, 4 * time.Minute},             // deadline + grace
+		{15 * time.Second, 30 * time.Second, 3 * time.Minute}, // under the deadline cap
+		{time.Hour, 2 * time.Minute, 5 * time.Minute},         // deadline + grace, under placeMax
+		{time.Hour, -time.Minute, 3 * time.Minute},            // a deadline already past counts as now
+	} {
+		if got := placeUntil(now, now.Add(tc.wait), tc.every).Sub(now); got != tc.want {
+			t.Errorf("every %s, wait %s: place lives %s, want %s", tc.every, tc.wait, got, tc.want)
+		}
+	}
+}
+
+// ⛔ Review of #53, CONFIRMED: with --every longer than --wait, one attempt
+// wrote a place of three hours and returned; the resource, once free, refused
+// every claim for those hours behind a session that had stopped waiting.
+func TestALongIntervalDoesNotHoldTheLineForHours(t *testing.T) {
+	s, c := waiting(t, time.Unix(1000, 0))
+	if _, err := s.Acquire("o/r", "alice", "", time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	if _, err := waitAcquire(s, "o/r", "bob", "", time.Hour, time.Minute, time.Hour, c.now, c.sleep, &out); err == nil {
+		t.Fatal("bob got a lease alice holds")
+	}
+	// Bob's place lives his deadline (1m) plus placeGrace (3m), not three hours.
+	c.t = c.t.Add(4*time.Minute + time.Second)
+	if _, err := s.Acquire("o/r", "carol", "", time.Minute); err != nil {
+		t.Fatalf("past bob's deadline plus the grace, carol is still refused: %v", err)
+	}
+}
+
+// ⛔ Review of #53 (both reviewers), CONFIRMED: a session waiting for the
+// organisation, blocked by a live lease inside it, froze every FREE repository
+// of that organisation. A waiter that cannot be granted what it waits for must
+// not stop others taking what nobody holds; once it can be, it is first again.
+func TestAnOrganisationWaiterDoesNotFreezeItsFreeRepositories(t *testing.T) {
+	s, c := waiting(t, time.Unix(1000, 0))
+	if _, err := s.Acquire("go-x/b", "dave", "", time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	if _, err := waitAcquire(s, "go-x", "bob", "", time.Hour, time.Minute, 15*time.Second, c.now, c.sleep, &out); err == nil {
+		t.Fatal("bob got the organisation while dave holds a repository in it")
+	}
+	l, err := s.Acquire("go-x/a", "carol", "", time.Minute)
+	if err != nil || l.Owner != "carol" {
+		t.Fatalf("carol, claiming a FREE repository, got %+v, %v", l, err)
+	}
+	if _, err := s.Release("go-x/a", "carol"); err != nil {
+		t.Fatal(err)
+	}
+	// dave lets go: bob can now be granted go-x, so he is ahead of anyone in it.
+	if _, err := s.Release("go-x/b", "dave"); err != nil {
+		t.Fatal(err)
+	}
+	_, err = s.Acquire("go-x/a", "carol", "", time.Minute)
+	var queued *lease.Queued
+	if !errors.As(err, &queued) || queued.Ahead[0].Owner != "bob" {
+		t.Fatalf("with go-x free, carol got %v; want QUEUED behind bob", err)
+	}
+}
+
+// ⛔ Review of #53, CONFIRMED: `claims` printed a line kept under `gitsafe` as
+// "free, nobody holds it" while go-gitsafe/gitsafe was held.
+func TestClaimsHangsALineUnderTheLeaseOfAnySpelling(t *testing.T) {
+	sandbox(t, "carol-3333")
+	s := store()
+	if _, err := s.Acquire("go-gitsafe/gitsafe", "alice-1111", "", time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	mustPlace(t, s, "gitsafe", "bob-2222")
+	var err error
+	out := capture(t, func() { err = claims(nil) })
+	if err != nil || strings.Contains(out, "nobody holds it") || !strings.Contains(out, "in line: bob-2222 since") {
+		t.Errorf("bob's line is not under alice's lease (%v):\n%s", err, out)
+	}
+}
+
+func TestClaimsShowsTheLineForAFreeResource(t *testing.T) {
+	sandbox(t, "carol-3333")
+	mustPlace(t, store(), "go-x/free", "bob-2222")
+	var err error
+	out := capture(t, func() { err = claims(nil) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"free     go-x/free", "nobody holds it", "in line: bob-2222 since"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("claims does not say %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "nothing is held") || strings.Contains(out, "no resource is claimed") {
+		t.Errorf("claims called a resource with a line unclaimed:\n%s", out)
 	}
 }
 

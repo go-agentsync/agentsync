@@ -715,6 +715,9 @@ func waitAcquireFor(s lease.Store, resource, owner, note, keep string, ttl, wait
 	for attempts := 1; ; attempts++ {
 		if wanted != nil {
 			if err := wanted(); err != nil {
+				// Out of the line too: a session that no longer wants the lease
+				// must not make the next one wait for its place to lapse.
+				_ = s.Leave(resource, owner)
 				return lease.Lease{}, err
 			}
 		}
@@ -726,19 +729,34 @@ func waitAcquireFor(s lease.Store, resource, owner, note, keep string, ttl, wait
 			return l, nil
 		}
 		var held *lease.Held
-		if !errors.As(err, &held) {
+		var queued *lease.Queued
+		if !errors.As(err, &held) && !errors.As(err, &queued) {
 			// Not "somebody holds it" but "the store would not answer". Waiting
 			// on that would spend the whole deadline reporting nothing.
+			_ = s.Leave(resource, owner)
 			return lease.Lease{}, err
+		}
+		// Take, or keep, this session's place in line. ⛔ It outlives the wait
+		// by placeLife on purpose: `claim --wait 9m` run again straight after a
+		// deadline must find its place, not the back of the line -- the
+		// polling this replaces lost exactly that way, nine times running.
+		before, werr := waitPlace(s, resource, owner, placeUntil(now(), stop, every))
+		if werr != nil {
+			return lease.Lease{}, werr
 		}
 		if !announced {
 			// Said ONCE. Repeating the holder and their note on every retry
 			// teaches the reader to skim the line that matters.
-			fmt.Fprintf(out, "WAITING  %s\n         held by %s until %s\n",
-				resource, short(held.By.Owner), held.By.Expires.Format("15:04:05"))
-			if held.By.Note != "" {
-				fmt.Fprintf(out, "         %q\n", held.By.Note)
+			if held != nil {
+				fmt.Fprintf(out, "WAITING  %s\n         held by %s until %s\n",
+					resource, short(held.By.Owner), held.By.Expires.Format("15:04:05"))
+				if held.By.Note != "" {
+					fmt.Fprintf(out, "         %q\n", held.By.Note)
+				}
+			} else {
+				fmt.Fprintf(out, "WAITING  %s\n         free, but it is not your turn\n", resource)
 			}
+			fmt.Fprintf(out, "         in line: %d session(s) ahead of you, first come first served\n", before)
 			fmt.Fprintf(out, "         retrying every %s until %s\n", every, stop.Format("15:04:05"))
 			announced = true
 		}
@@ -747,6 +765,46 @@ func waitAcquireFor(s lease.Store, resource, owner, note, keep string, ttl, wait
 		}
 		sleep(every)
 	}
+}
+
+// placeGrace is how long a place survives its wait's deadline, and placeMax
+// the longest it ever survives its last refresh.
+//
+// Three minutes of grace because a session re-running `claim --wait` reads the
+// refusal and often does something first (review of #53: one minute was lost
+// by a turn that ran prwait in between); ten minutes at most because a waiter
+// that died blocks a FREE resource for as long as its place lives, and with
+// `--every 1h` three retries was three hours.
+const (
+	placeGrace = 3 * time.Minute
+	placeMax   = 10 * time.Minute
+)
+
+// placeUntil is when a place refreshed at now lapses: three retries ahead, so
+// one slow attempt does not lose it, at least placeGrace, and never past the
+// wait's deadline plus placeGrace nor more than placeMax from now.
+func placeUntil(now, stop time.Time, every time.Duration) time.Time {
+	life := 3 * every
+	if life < placeGrace {
+		life = placeGrace
+	}
+	if life > placeMax {
+		life = placeMax
+	}
+	until := now.Add(life)
+	if stop.Before(now) {
+		stop = now
+	}
+	if limit := stop.Add(placeGrace); until.After(limit) {
+		return limit
+	}
+	return until
+}
+
+// waitPlace is lease.Store.Wait, replaceable so a test can make it fail while
+// the lease itself still answers.
+var waitPlace = func(s lease.Store, resource, owner string, until time.Time) (int, error) {
+	return s.Wait(resource, owner, until)
 }
 
 func claim(args []string) error {
@@ -802,10 +860,18 @@ func claim(args []string) error {
 			l, err = s.AcquireKeep(r, owner(), *note, *keep, *ttl)
 		}
 		var held *lease.Held
+		var queued *lease.Queued
 		switch {
 		case errors.Is(err, errRequesterGone):
 			failed = true
 			fmt.Printf("DROPPED  %s\n         %v\n", r, err)
+		case errors.As(err, &queued):
+			failed = true
+			fmt.Printf("QUEUED   %s\n         free, but %d session(s) waited longer; your turn comes after:\n", r, len(queued.Ahead))
+			for _, w := range queued.Ahead {
+				fmt.Printf("         %s, waiting since %s\n", short(w.Owner), w.Since.Format("15:04:05"))
+			}
+			fmt.Printf("         wait your turn: agentsync claim --wait <d> %s\n", r)
 		case errors.As(err, &held):
 			failed = true
 			fmt.Printf("REFUSED  %s\n         held by %s until %s\n", r, short(held.By.Owner), held.By.Expires.Format("15:04:05"))
@@ -998,7 +1064,8 @@ func claims(args []string) error {
 	if err != nil {
 		return err
 	}
-	if len(ls) == 0 {
+	lines := store().Lines()
+	if len(ls) == 0 && len(lines) == 0 {
 		fmt.Println("no resource is claimed")
 		return nil
 	}
@@ -1022,14 +1089,55 @@ func claims(args []string) error {
 		if l.Note != "" {
 			fmt.Printf("         %q\n", l.Note)
 		}
+		// The line behind the holder (agentsync#42): who gets it next is what a
+		// session reading this list is deciding about.
+		if q, qerr := store().Line(l.Resource); qerr != nil {
+			fmt.Printf("         in line: unreadable (%v)\n", qerr)
+		} else if len(q) > 0 {
+			fmt.Printf("         in line: %s\n", lineText(q))
+		}
+	}
+	// ⛔ A line with no lease row above it is printed too: a FREE resource that
+	// refuses a claim as QUEUED is exactly what a session runs `claims` to
+	// understand (review of #53), and it has no row to hang from.
+	var free []string
+	for r := range lines {
+		if !shownFor(shown, r) {
+			free = append(free, r)
+		}
+	}
+	sort.Strings(free)
+	for _, r := range free {
+		fmt.Printf("%-8s %-42s nobody holds it\n         in line: %s\n", "free", r, lineText(lines[r]))
 	}
 	if hidden > 0 {
 		fmt.Printf("\n%d expired lease(s) not shown; --all to see them.\n", hidden)
 	}
-	if len(shown) == 0 {
+	if len(shown) == 0 && len(free) == 0 {
 		fmt.Println("nothing is held right now.")
 	}
 	return nil
+}
+
+func lineText(q []lease.Waiter) string {
+	names := make([]string, len(q))
+	for i, w := range q {
+		names[i] = fmt.Sprintf("%s since %s", short(w.Owner), w.Since.Format("15:04:05"))
+	}
+	return strings.Join(names, ", ")
+}
+
+// shownFor reports whether a lease row that is one claim with resource is
+// already printed, with the merged line under it. ⛔ One CLAIM, not one file
+// (review of #53): a line under `gitsafe` was printed as "free, nobody holds
+// it" while go-gitsafe/gitsafe was held.
+func shownFor(shown []lease.Lease, resource string) bool {
+	for _, l := range shown {
+		if lease.Overlaps(l.Resource, resource) {
+			return true
+		}
+	}
+	return false
 }
 
 // visible is the decision claims makes, kept separate from the printing so it can be

@@ -88,7 +88,8 @@ type Store struct {
 	// the lease. Zero disables it: a lease then lasts to its deadline.
 	Idle time.Duration
 
-	remove func(string) error // nil is os.Remove; a test's way to make removal fail
+	remove func(string) error         // nil is os.Remove; a test's way to make removal fail
+	rename func(string, string) error // nil is os.Rename; the same, for a queue's write
 }
 
 func (s Store) now() time.Time {
@@ -316,17 +317,24 @@ func (s Store) overlapping(target, key, owner string, now time.Time) *Lease {
 		if err != nil {
 			continue // a torn file is not a holder
 		}
-		k := Normalize(l.Resource)
 		if l.Owner == owner || l.Takeable(now, s.Idle) {
 			continue
 		}
-		if covers(k, key) || covers(key, k) || bareNames(k, key) || bareNames(key, k) ||
-			dashNames(k, key) || dashNames(key, k) {
+		if overlaps(Normalize(l.Resource), key) {
 			held := l
 			return &held
 		}
 	}
 	return nil
+}
+
+// overlaps reports whether two normalised keys are one claim: one encloses the
+// other, or they are the bare, dashed and slashed names of one repository. The
+// lease conflict and the waiting line use this one test, so a spelling that
+// would be refused as Held cannot jump the line either.
+func overlaps(a, b string) bool {
+	return covers(a, b) || covers(b, a) || bareNames(a, b) || bareNames(b, a) ||
+		dashNames(a, b) || dashNames(b, a)
 }
 
 // path maps a resource to a file name. The resource is normalised first, so two
@@ -380,7 +388,36 @@ func (s Store) AcquireKeep(resource, owner, note, keep string, ttl time.Duration
 	if held := s.overlapping(p, Normalize(resource), owner, now); held != nil {
 		return Lease{}, &Held{By: *held}
 	}
+	// ⛔ FIRST COME, FIRST SERVED (queue.go says why). Sessions waiting longer
+	// get a lease that is free or takeable before this one does. A live lease
+	// held by someone else is still reported as Held -- who holds it is the more
+	// useful answer -- and a holder extending its own lease jumps nobody.
+	line, err := s.waitersAhead(resource, owner, now, false)
+	if err != nil {
+		return Lease{}, err
+	}
+	if len(line) > 0 {
+		cur, rerr := s.read(p)
+		switch {
+		case rerr == nil && !cur.Takeable(now, s.Idle) && cur.Owner == owner:
+			// Extending a LIVE lease of one's own. An expired or idle one is free
+			// by this package's rule, and its former holder queues like anyone.
+		case rerr == nil && !cur.Takeable(now, s.Idle):
+			return Lease{}, &Held{By: cur}
+		default:
+			return Lease{}, &Queued{Resource: resource, Ahead: line}
+		}
+	}
+	got, err := s.acquire(p, body, l, owner, now, resource)
+	if err == nil {
+		// Best effort: the lease is ours, and a place left in line lapses on its
+		// own at its Until.
+		_ = s.Leave(resource, owner)
+	}
+	return got, err
+}
 
+func (s Store) acquire(p string, body []byte, l Lease, owner string, now time.Time, resource string) (Lease, error) {
 	for attempt := 0; attempt < 2; attempt++ {
 		err := createExclusive(p, body)
 		if err == nil {

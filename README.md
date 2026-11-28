@@ -137,6 +137,28 @@ Each is now a tool's job:
   every attempt, whether the session's transcript was written in the last
   12 minutes (`AGENTSYNC_WAIT_GRACE`; a foreground command cannot outlast ten).
   An unknown session or an unreadable transcript is never dropped.
+- **Waiting is first come, first served.** A `claim --wait` that is refused
+  takes a place in line (`locks/<resource>.queue`) and keeps it while it
+  retries. When the lease lapses, is released or goes idle, only the session
+  that has waited longest may take it; anyone else — a later waiter or a plain
+  `claim` — is refused with `QUEUED` and the names ahead of it. The line binds
+  every spelling the lease does (`o/r`, `o-r`, the bare `r`, the organisation
+  `o`), and a holder whose own lease expired or went idle queues like anyone. A
+  waiter for another spelling counts only while it could be granted what it
+  waits for: one waiting for the organisation `o`, blocked by a lease on `o/b`,
+  does not stop anyone taking a free `o/a` — so a wait for an organisation is
+  best effort, and claims on its free repositories can keep overtaking it.
+  Winning a lease leaves the line for it under every spelling and for what it
+  encloses, never for what encloses it. A place lives three retries (at
+  least 3 minutes, at most 10) and never more than 3 minutes past its wait's
+  deadline, so running `claim --wait` again right after a deadline keeps it,
+  while a waiter that stopped or died blocks a free resource for at most those
+  3 minutes. `claims` prints `in line:` under each lease, and a
+  `free` row for a line on a resource nobody holds. A torn queue file reads as
+  an empty line (as a torn lease reads as free); an unreadable one is an error.
+  Before this, the first `Acquire` after a lapse won: on 2026-11-27/28 one
+  session with a green pull request lost go-fleettools/fleettools ten times
+  running to sessions that arrived later.
 
 `tell` is the answer to a refusal, which until 2026-10-11 was a dead end. A
 refusal names the holder and prints their note — which tells the refused session
@@ -217,8 +239,8 @@ decides to act anyway, which is the collision this tool exists to prevent.
 
     agentsync claim --wait 30m --note "tag v0.8.2 once their work lands" go-embedded-ruby/ruby
 
-It says who holds it and why **once**, not on every retry, and then one line
-when it gets in. If the deadline passes it returns the holder's refusal
+It says who holds it and why **once**, not on every retry, with how many
+sessions are ahead of it in line, and then one line when it gets in. If the deadline passes it returns the holder's refusal
 unchanged, so a session that waited and still did not get in reads exactly what
 it would have read at once.
 
@@ -229,7 +251,8 @@ prevent. `--every 0` is refused too: that is a busy loop, not a wait.
 
 ⛔ It waits for a lease to **lapse**, not for the holder to finish. A holder who
 renews keeps it, and a holder who dies releases it at the TTL rather than never
-— which is why leases expire at all.
+— which is why leases expire at all. When it lapses it goes to the session
+that has waited **longest**, not to whichever asks first.
 
 **A resource has one name, whatever you type.** `github.com/go-ansible/.github`,
 `https://github.com/go-ansible/.github.git`, `git@github.com:go-ansible/.github`
