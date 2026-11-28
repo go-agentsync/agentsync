@@ -452,6 +452,103 @@ func TestOnlyAQueueFileIsALine(t *testing.T) {
 	}
 }
 
+// ⛔ Review of #53, CONFIRMED: a session that waited under one spelling and won
+// under another left only the second line; its old place then held the next
+// waiter back after it had released.
+func TestWinningLeavesTheLineUnderEverySpelling(t *testing.T) {
+	t0 := time.Unix(1000, 0)
+	s, now := clocked(t, t0)
+	mustWait(t, s, "go-gitsafe/gitsafe", "bob", t0.Add(time.Hour))
+	mustWait(t, s, "go-other/thing", "bob", t0.Add(time.Hour)) // unrelated: kept
+	if _, err := s.Acquire("gitsafe", "bob", "", time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	*now = t0.Add(time.Second)
+	mustWait(t, s, "go-gitsafe/gitsafe", "carol", t0.Add(time.Hour))
+	if _, err := s.Release("gitsafe", "bob"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Acquire("go-gitsafe/gitsafe", "carol", "", time.Minute); err != nil {
+		t.Fatalf("bob won and released, and carol is still behind his old place: %v", err)
+	}
+	if q, _ := s.Queue("go-other/thing"); len(q) != 1 {
+		t.Errorf("winning gitsafe took bob out of an unrelated line: %+v", q)
+	}
+}
+
+func TestLeavingAnOwnLineThatCannotBeReadIsAnError(t *testing.T) {
+	t0 := time.Unix(1000, 0)
+	s, _ := clocked(t, t0)
+	if err := os.Mkdir(s.queuePath("o/r"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Leave("o/r", "bob"); err == nil {
+		t.Error("Leave reported success on its own line it could not read")
+	}
+}
+
+// A place found without its resource name (written by an earlier build of
+// this change) gets it back on refresh, so other spellings see it again.
+func TestARefreshGivesAPlaceBackItsName(t *testing.T) {
+	t0 := time.Unix(1000, 0)
+	s, _ := clocked(t, t0)
+	legacy := `[{"owner":"bob","since":"1970-01-01T00:16:40Z","until":"2100-01-01T00:00:00Z"}]`
+	if err := os.WriteFile(s.queuePath("go-gitsafe/gitsafe"), []byte(legacy), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mustWait(t, s, "go-gitsafe/gitsafe", "bob", t0.Add(time.Hour))
+	_, err := s.Acquire("gitsafe", "carol", "", time.Minute)
+	wantQueued(t, err, "bob")
+}
+
+// Line is what `claims` prints: every spelling's waiters, each session once.
+func TestLineMergesEverySpelling(t *testing.T) {
+	t0 := time.Unix(1000, 0)
+	s, now := clocked(t, t0)
+	mustWait(t, s, "gitsafe", "bob", t0.Add(time.Hour))
+	*now = t0.Add(time.Second)
+	mustWait(t, s, "go-gitsafe/gitsafe", "alice", t0.Add(time.Hour))
+	q, err := s.Line("go-gitsafe/gitsafe")
+	if err != nil || len(q) != 2 || q[0].Owner != "bob" || q[1].Owner != "alice" {
+		t.Errorf("Line = %+v, %v; want bob then alice", q, err)
+	}
+	if err := os.Mkdir(s.queuePath("o/r"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Line("o/r"); err == nil {
+		t.Error("Line read a directory as an empty line")
+	}
+}
+
+// A waiter for a repository the caller itself holds cannot be granted it, so it
+// does not stop the caller widening its own claim to the organisation.
+func TestAWaiterForWhatTheCallerHoldsDoesNotBlockIt(t *testing.T) {
+	t0 := time.Unix(1000, 0)
+	s, _ := clocked(t, t0)
+	if _, err := s.Acquire("go-x/a", "carol", "", time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	mustWait(t, s, "go-x/a", "bob", t0.Add(time.Hour))
+	if l, err := s.Acquire("go-x", "carol", "", time.Hour); err != nil || l.Owner != "carol" {
+		t.Fatalf("carol, widening her own claim, got %+v, %v", l, err)
+	}
+}
+
+func TestOverlapsIsOneClaim(t *testing.T) {
+	for _, c := range []struct {
+		a, b string
+		want bool
+	}{
+		{"go-x", "go-x/a", true},
+		{"gitsafe", "go-gitsafe/gitsafe", true},
+		{"go-x/a", "go-x/b", false},
+	} {
+		if got := Overlaps(c.a, c.b); got != c.want {
+			t.Errorf("Overlaps(%q, %q) = %v, want %v", c.a, c.b, got, c.want)
+		}
+	}
+}
+
 func TestAStoreWithNoDirectoryHasNoLines(t *testing.T) {
 	s := Store{Dir: filepath.Join(t.TempDir(), "never-made")}
 	if got := s.Lines(); len(got) != 0 {

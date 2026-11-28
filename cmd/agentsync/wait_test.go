@@ -328,14 +328,15 @@ func TestAPlaceLivesThreeRetriesButNotPastTheWait(t *testing.T) {
 	for _, tc := range []struct {
 		every, wait, want time.Duration // want is from now
 	}{
-		{time.Second, time.Hour, time.Minute},
-		{15 * time.Second, time.Hour, time.Minute},
-		{20 * time.Second, time.Hour, time.Minute},
-		{21 * time.Second, time.Hour, 63 * time.Second},
-		{time.Minute, time.Hour, 3 * time.Minute},
-		{time.Hour, time.Minute, 2 * time.Minute},         // capped: deadline + 1m
-		{time.Minute, 30 * time.Second, 90 * time.Second}, // capped
-		{time.Hour, -time.Minute, time.Minute},            // a deadline already past counts as now
+		{time.Second, time.Hour, 3 * time.Minute},             // floor: placeGrace
+		{15 * time.Second, time.Hour, 3 * time.Minute},        // the default --every
+		{time.Minute, time.Hour, 3 * time.Minute},             // three retries = the floor
+		{61 * time.Second, time.Hour, 183 * time.Second},      // three retries
+		{time.Hour, 9 * time.Hour, 10 * time.Minute},          // ceiling: placeMax
+		{time.Hour, time.Minute, 4 * time.Minute},             // deadline + grace
+		{15 * time.Second, 30 * time.Second, 3 * time.Minute}, // under the deadline cap
+		{time.Hour, 2 * time.Minute, 5 * time.Minute},         // deadline + grace, under placeMax
+		{time.Hour, -time.Minute, 3 * time.Minute},            // a deadline already past counts as now
 	} {
 		if got := placeUntil(now, now.Add(tc.wait), tc.every).Sub(now); got != tc.want {
 			t.Errorf("every %s, wait %s: place lives %s, want %s", tc.every, tc.wait, got, tc.want)
@@ -355,9 +356,57 @@ func TestALongIntervalDoesNotHoldTheLineForHours(t *testing.T) {
 	if _, err := waitAcquire(s, "o/r", "bob", "", time.Hour, time.Minute, time.Hour, c.now, c.sleep, &out); err == nil {
 		t.Fatal("bob got a lease alice holds")
 	}
-	c.t = c.t.Add(3 * time.Minute)
+	// Bob's place lives his deadline (1m) plus placeGrace (3m), not three hours.
+	c.t = c.t.Add(4*time.Minute + time.Second)
 	if _, err := s.Acquire("o/r", "carol", "", time.Minute); err != nil {
-		t.Fatalf("3 minutes after bob's 1-minute wait ended, carol is still refused: %v", err)
+		t.Fatalf("past bob's deadline plus the grace, carol is still refused: %v", err)
+	}
+}
+
+// ⛔ Review of #53 (both reviewers), CONFIRMED: a session waiting for the
+// organisation, blocked by a live lease inside it, froze every FREE repository
+// of that organisation. A waiter that cannot be granted what it waits for must
+// not stop others taking what nobody holds; once it can be, it is first again.
+func TestAnOrganisationWaiterDoesNotFreezeItsFreeRepositories(t *testing.T) {
+	s, c := waiting(t, time.Unix(1000, 0))
+	if _, err := s.Acquire("go-x/b", "dave", "", time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	if _, err := waitAcquire(s, "go-x", "bob", "", time.Hour, time.Minute, 15*time.Second, c.now, c.sleep, &out); err == nil {
+		t.Fatal("bob got the organisation while dave holds a repository in it")
+	}
+	l, err := s.Acquire("go-x/a", "carol", "", time.Minute)
+	if err != nil || l.Owner != "carol" {
+		t.Fatalf("carol, claiming a FREE repository, got %+v, %v", l, err)
+	}
+	if _, err := s.Release("go-x/a", "carol"); err != nil {
+		t.Fatal(err)
+	}
+	// dave lets go: bob can now be granted go-x, so he is ahead of anyone in it.
+	if _, err := s.Release("go-x/b", "dave"); err != nil {
+		t.Fatal(err)
+	}
+	_, err = s.Acquire("go-x/a", "carol", "", time.Minute)
+	var queued *lease.Queued
+	if !errors.As(err, &queued) || queued.Ahead[0].Owner != "bob" {
+		t.Fatalf("with go-x free, carol got %v; want QUEUED behind bob", err)
+	}
+}
+
+// ⛔ Review of #53, CONFIRMED: `claims` printed a line kept under `gitsafe` as
+// "free, nobody holds it" while go-gitsafe/gitsafe was held.
+func TestClaimsHangsALineUnderTheLeaseOfAnySpelling(t *testing.T) {
+	sandbox(t, "carol-3333")
+	s := store()
+	if _, err := s.Acquire("go-gitsafe/gitsafe", "alice-1111", "", time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	mustPlace(t, s, "gitsafe", "bob-2222")
+	var err error
+	out := capture(t, func() { err = claims(nil) })
+	if err != nil || strings.Contains(out, "nobody holds it") || !strings.Contains(out, "in line: bob-2222 since") {
+		t.Errorf("bob's line is not under alice's lease (%v):\n%s", err, out)
 	}
 }
 

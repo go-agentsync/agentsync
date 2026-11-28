@@ -144,10 +144,13 @@ Each is now a tool's job:
   `claim` — is refused with `QUEUED` and the names ahead of it. The line binds
   every spelling the lease does (`o/r`, `o-r`, the bare `r`, the organisation
   `o`), and a holder whose own lease expired or went idle queues like anyone. A
-  place lives three retries (never under a minute) and never more than a minute
-  past its wait's deadline, so running `claim --wait` again right after a
-  deadline keeps it, while a waiter that stopped or died blocks a free resource
-  for at most that minute. `claims` prints `in line:` under each lease, and a
+  waiter for another spelling counts only while it could be granted what it
+  waits for: one waiting for the organisation `o`, blocked by a lease on `o/b`,
+  does not stop anyone taking a free `o/a`. A place lives three retries (at
+  least 3 minutes, at most 10) and never more than 3 minutes past its wait's
+  deadline, so running `claim --wait` again right after a deadline keeps it,
+  while a waiter that stopped or died blocks a free resource for at most those
+  3 minutes. `claims` prints `in line:` under each lease, and a
   `free` row for a line on a resource nobody holds. A torn queue file reads as
   an empty line (as a torn lease reads as free); an unreadable one is an error.
   Before this, the first `Acquire` after a lapse won: on 2026-11-27/28 one

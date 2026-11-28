@@ -154,6 +154,11 @@ func (s Store) place(resource, owner string, until, now time.Time) error {
 	for i := range ws {
 		if ws[i].Owner == owner {
 			ws[i].Until = until
+			if ws[i].Resource == "" {
+				// A place without its name is invisible to every other spelling's
+				// line; a refresh gives it back.
+				ws[i].Resource = resource
+			}
 			found = true
 		}
 	}
@@ -163,10 +168,32 @@ func (s Store) place(resource, owner string, until, now time.Time) error {
 	return s.writeQueue(qp, ws)
 }
 
-// Leave takes owner out of the line for resource. Leaving a line one is not in
-// is not an error.
+// Leave takes owner out of the line for resource, under EVERY spelling that is
+// one claim with it. Leaving a line one is not in is not an error.
+//
+// ⛔ Every spelling (review of #53): a session that waited as
+// go-gitsafe/gitsafe and won as gitsafe left only the second line, and its old
+// place then held the next waiter back after it had released.
 func (s Store) Leave(resource, owner string) error {
-	qp := s.queuePath(resource)
+	own := s.queuePath(resource)
+	if err := s.leaveIn(own, owner); err != nil {
+		return err
+	}
+	key := Normalize(resource)
+	for qp, ws := range s.otherQueues(own) {
+		for _, w := range ws {
+			if w.Owner == owner && w.Resource != "" && overlaps(Normalize(w.Resource), key) {
+				// Best effort, as the own line's is not: that one is the line
+				// the caller named.
+				_ = s.leaveIn(qp, owner)
+				break
+			}
+		}
+	}
+	return nil
+}
+
+func (s Store) leaveIn(qp, owner string) error {
 	unlock, err := s.lock(qp)
 	if err != nil {
 		return err
@@ -186,7 +213,7 @@ func (s Store) Leave(resource, owner string) error {
 	return s.writeQueue(qp, keep)
 }
 
-// Queue returns the live waiters for resource, longest-waiting first.
+// Queue returns the live waiters for resource's own line, longest-waiting first.
 func (s Store) Queue(resource string) ([]Waiter, error) {
 	ws, err := s.readQueue(s.queuePath(resource))
 	if err != nil {
@@ -194,6 +221,20 @@ func (s Store) Queue(resource string) ([]Waiter, error) {
 	}
 	return live(ws, s.now()), nil
 }
+
+// Line is everyone waiting for resource under any spelling that is one claim
+// with it, longest-waiting first, each session once. It is what `claims` shows.
+func (s Store) Line(resource string) ([]Waiter, error) {
+	merged, err := s.merged(resource)
+	if err != nil {
+		return nil, err
+	}
+	return earliestPerOwner(live(merged, s.now())), nil
+}
+
+// Overlaps reports whether two resources are one claim under the lease rules:
+// one encloses the other, or they name one repository differently.
+func Overlaps(a, b string) bool { return overlaps(Normalize(a), Normalize(b)) }
 
 // ahead is the waiters in ws that come before owner: all of them when owner is
 // not in line, since a session that has not waited has not earned a place.
@@ -215,7 +256,33 @@ func ahead(ws []Waiter, owner string) []Waiter {
 //
 // The resource's OWN queue must be readable; another one that cannot be read
 // is skipped, as overlapping skips a torn lease.
+//
+// ⛔ A waiter for ANOTHER resource counts only while it could be granted that
+// resource now (review of #53, found by both reviewers): a session waiting for
+// the organisation go-x, blocked by a live lease on go-x/b, otherwise froze
+// every FREE repository of go-x for as long as go-x/b was held -- a waiter that
+// cannot take what it waits for must not stop others taking what nobody holds.
+// A waiter for the same key is blocked by whatever blocks this caller, so it
+// always counts.
 func (s Store) waitersAhead(resource, owner string, now time.Time) ([]Waiter, error) {
+	merged, err := s.merged(resource)
+	if err != nil {
+		return nil, err
+	}
+	key := Normalize(resource)
+	var line []Waiter
+	for _, w := range live(merged, now) {
+		if w.Resource == "" || Normalize(w.Resource) == key || s.grantable(w, now) {
+			line = append(line, w)
+		}
+	}
+	return ahead(earliestPerOwner(line), owner), nil
+}
+
+// merged is resource's own queue, which must be readable, plus the waiters of
+// every other queue whose resource overlaps it; another queue that cannot be
+// read is skipped, as overlapping skips a torn lease.
+func (s Store) merged(resource string) ([]Waiter, error) {
 	own := s.queuePath(resource)
 	merged, err := s.readQueue(own)
 	if err != nil {
@@ -229,7 +296,17 @@ func (s Store) waitersAhead(resource, owner string, now time.Time) ([]Waiter, er
 			}
 		}
 	}
-	return ahead(earliestPerOwner(live(merged, now)), owner), nil
+	return merged, nil
+}
+
+// grantable reports whether w could be given its own resource now: no live
+// lease of another session holds it, under its name or an overlapping one.
+func (s Store) grantable(w Waiter, now time.Time) bool {
+	p := s.path(w.Resource)
+	if cur, err := s.read(p); err == nil && cur.Owner != w.Owner && !cur.Takeable(now, s.Idle) {
+		return false
+	}
+	return s.overlapping(p, Normalize(w.Resource), w.Owner, now) == nil
 }
 
 // otherQueues reads every queue file in the store except skip. A directory that

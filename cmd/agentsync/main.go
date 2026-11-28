@@ -767,23 +767,35 @@ func waitAcquireFor(s lease.Store, resource, owner, note, keep string, ttl, wait
 	}
 }
 
-// placeUntil is when a place taken at now lapses without a refresh: three
-// retries ahead, so one slow attempt does not lose it, and never under a minute,
-// so a session re-running `claim --wait` after its deadline is still in line.
+// placeGrace is how long a place survives its wait's deadline, and placeMax
+// the longest it ever survives its last refresh.
 //
-// ⛔ And never more than a minute PAST THE WAIT'S DEADLINE (review of #53): with
-// `--every 1h` a place of three retries outlived its waiter by hours, and every
-// claim of the then-free resource was QUEUED behind a session that had stopped.
+// Three minutes of grace because a session re-running `claim --wait` reads the
+// refusal and often does something first (review of #53: one minute was lost
+// by a turn that ran prwait in between); ten minutes at most because a waiter
+// that died blocks a FREE resource for as long as its place lives, and with
+// `--every 1h` three retries was three hours.
+const (
+	placeGrace = 3 * time.Minute
+	placeMax   = 10 * time.Minute
+)
+
+// placeUntil is when a place refreshed at now lapses: three retries ahead, so
+// one slow attempt does not lose it, at least placeGrace, and never past the
+// wait's deadline plus placeGrace nor more than placeMax from now.
 func placeUntil(now, stop time.Time, every time.Duration) time.Time {
 	life := 3 * every
-	if life < time.Minute {
-		life = time.Minute
+	if life < placeGrace {
+		life = placeGrace
+	}
+	if life > placeMax {
+		life = placeMax
 	}
 	until := now.Add(life)
 	if stop.Before(now) {
 		stop = now
 	}
-	if limit := stop.Add(time.Minute); until.After(limit) {
+	if limit := stop.Add(placeGrace); until.After(limit) {
 		return limit
 	}
 	return until
@@ -1079,7 +1091,7 @@ func claims(args []string) error {
 		}
 		// The line behind the holder (agentsync#42): who gets it next is what a
 		// session reading this list is deciding about.
-		if q, qerr := store().Queue(l.Resource); qerr != nil {
+		if q, qerr := store().Line(l.Resource); qerr != nil {
 			fmt.Printf("         in line: unreadable (%v)\n", qerr)
 		} else if len(q) > 0 {
 			fmt.Printf("         in line: %s\n", lineText(q))
@@ -1115,11 +1127,13 @@ func lineText(q []lease.Waiter) string {
 	return strings.Join(names, ", ")
 }
 
-// shownFor reports whether a lease row for resource (under any spelling that is
-// the same file) is already printed, with its line under it.
+// shownFor reports whether a lease row that is one claim with resource is
+// already printed, with the merged line under it. ⛔ One CLAIM, not one file
+// (review of #53): a line under `gitsafe` was printed as "free, nobody holds
+// it" while go-gitsafe/gitsafe was held.
 func shownFor(shown []lease.Lease, resource string) bool {
 	for _, l := range shown {
-		if lease.Normalize(l.Resource) == lease.Normalize(resource) {
+		if lease.Overlaps(l.Resource, resource) {
 			return true
 		}
 	}
