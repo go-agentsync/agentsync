@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -26,8 +27,11 @@ import (
 
 // Waiter is one session waiting its turn for a resource.
 type Waiter struct {
-	Owner string    `json:"owner"`
-	Since time.Time `json:"since"`
+	// Resource is the name the waiter asked for, so a line can be matched
+	// against every spelling that would conflict with it (see overlaps).
+	Resource string    `json:"resource,omitempty"`
+	Owner    string    `json:"owner"`
+	Since    time.Time `json:"since"`
 	// Until is when the place lapses unless the waiter refreshes it. A waiter
 	// that died, gave up or whose session ended must not hold the line for
 	// ever: that would be the outage this package exists to prevent, moved
@@ -82,11 +86,28 @@ func (s Store) writeQueue(qp string, ws []Waiter) error {
 		return nil
 	}
 	body, _ := json.MarshalIndent(ws, "", "  ") // strings and times cannot fail to marshal
-	tmp := qp + ".tmp"
-	if err := os.WriteFile(tmp, body, 0o644); err != nil {
+	// ⛔ A PRIVATE temporary name. A fixed one is shared by any two writers the
+	// lock fails to separate (a lock taken as stale from a stalled holder), and
+	// the second rename then finds nothing: review of #53 lost 24 of 24
+	// concurrent places that way.
+	f, err := os.CreateTemp(filepath.Dir(qp), ".queue-*.tmp")
+	if err != nil {
 		return err
 	}
-	return os.Rename(tmp, qp)
+	tmp := f.Name()
+	defer os.Remove(tmp)
+	rename := os.Rename
+	if s.rename != nil {
+		rename = s.rename
+	}
+	_, werr := f.Write(body)
+	cerr := f.Close()
+	// Renamed into place only when it is whole: a short write must not become
+	// the line.
+	if werr == nil && cerr == nil {
+		werr = rename(tmp, qp)
+	}
+	return errors.Join(werr, cerr)
 }
 
 func live(ws []Waiter, now time.Time) []Waiter {
@@ -104,18 +125,29 @@ func live(ws []Waiter, now time.Time) []Waiter {
 // that is what makes the line first come, first served. It returns how many
 // live waiters are ahead.
 func (s Store) Wait(resource, owner string, until time.Time) (int, error) {
+	now := s.now()
+	if err := s.place(resource, owner, until, now); err != nil {
+		return 0, err
+	}
+	// Counted after the lock is released: the line spans other queue files,
+	// which have their own locks, and a count is advice, not a grant.
+	line, err := s.waitersAhead(resource, owner, now)
+	return len(line), err
+}
+
+// place writes or refreshes owner's place in resource's own queue, under its lock.
+func (s Store) place(resource, owner string, until, now time.Time) error {
 	// A directory that cannot be made is reported by the lock, which is made in it.
 	_ = os.MkdirAll(s.Dir, 0o755)
 	qp := s.queuePath(resource)
 	unlock, err := s.lock(qp)
 	if err != nil {
-		return 0, err
+		return err
 	}
 	defer unlock()
-	now := s.now()
 	ws, err := s.readQueue(qp)
 	if err != nil {
-		return 0, err
+		return err
 	}
 	ws = live(ws, now)
 	found := false
@@ -126,12 +158,9 @@ func (s Store) Wait(resource, owner string, until time.Time) (int, error) {
 		}
 	}
 	if !found {
-		ws = append(ws, Waiter{Owner: owner, Since: now, Until: until})
+		ws = append(ws, Waiter{Resource: resource, Owner: owner, Since: now, Until: until})
 	}
-	if err := s.writeQueue(qp, ws); err != nil {
-		return 0, err
-	}
-	return len(ahead(ws, owner)), nil
+	return s.writeQueue(qp, ws)
 }
 
 // Leave takes owner out of the line for resource. Leaving a line one is not in
@@ -177,11 +206,75 @@ func ahead(ws []Waiter, owner string) []Waiter {
 	return ws
 }
 
-// waitersAhead is the live line in front of owner for resource.
+// waitersAhead is the live line in front of owner for resource: its own queue
+// and every other queue whose resource overlaps it (an enclosing organisation,
+// the bare or dashed name of the same repository), merged by arrival. Without
+// the merge, `claim gitsafe` walked past a line kept under go-gitsafe/gitsafe
+// (review of #53) -- the spelling collision of 2026-11-22, back through the
+// queue.
+//
+// The resource's OWN queue must be readable; another one that cannot be read
+// is skipped, as overlapping skips a torn lease.
 func (s Store) waitersAhead(resource, owner string, now time.Time) ([]Waiter, error) {
-	ws, err := s.readQueue(s.queuePath(resource))
+	own := s.queuePath(resource)
+	merged, err := s.readQueue(own)
 	if err != nil {
 		return nil, err
 	}
-	return ahead(live(ws, now), owner), nil
+	key := Normalize(resource)
+	for _, ws := range s.otherQueues(own) {
+		for _, w := range ws {
+			if w.Resource != "" && overlaps(Normalize(w.Resource), key) {
+				merged = append(merged, w)
+			}
+		}
+	}
+	return ahead(earliestPerOwner(live(merged, now)), owner), nil
+}
+
+// otherQueues reads every queue file in the store except skip. A directory that
+// cannot be listed yields none: it is not a line.
+func (s Store) otherQueues(skip string) map[string][]Waiter {
+	out := map[string][]Waiter{}
+	entries, _ := os.ReadDir(s.Dir) // on an error, none: an unlistable directory holds no line
+	for _, e := range entries {
+		qp := filepath.Join(s.Dir, e.Name())
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".queue") || qp == skip {
+			continue
+		}
+		if ws, err := s.readQueue(qp); err == nil && len(ws) > 0 {
+			out[qp] = ws
+		}
+	}
+	return out
+}
+
+// earliestPerOwner sorts by arrival and keeps each owner once, at its earliest
+// place: a session waiting under two spellings is one session in line.
+func earliestPerOwner(ws []Waiter) []Waiter {
+	sort.SliceStable(ws, func(i, j int) bool { return ws[i].Since.Before(ws[j].Since) })
+	seen := map[string]bool{}
+	var out []Waiter
+	for _, w := range ws {
+		if !seen[w.Owner] {
+			seen[w.Owner] = true
+			out = append(out, w)
+		}
+	}
+	return out
+}
+
+// Lines returns every live line in the store, keyed by the resource its
+// earliest waiter asked for. `claims` prints them, including the line for a
+// resource nobody holds -- the one case where "why was I QUEUED" has no lease
+// row to hang from.
+func (s Store) Lines() map[string][]Waiter {
+	out := map[string][]Waiter{}
+	now := s.now()
+	for _, ws := range s.otherQueues("") {
+		if l := live(ws, now); len(l) > 0 && l[0].Resource != "" {
+			out[l[0].Resource] = l
+		}
+	}
+	return out
 }

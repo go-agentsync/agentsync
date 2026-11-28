@@ -141,11 +141,17 @@ Each is now a tool's job:
   takes a place in line (`locks/<resource>.queue`) and keeps it while it
   retries. When the lease lapses, is released or goes idle, only the session
   that has waited longest may take it; anyone else — a later waiter or a plain
-  `claim` — is refused with `QUEUED` and the names ahead of it. A place outlives
-  its wait by three retries (never under a minute), so running `claim --wait`
-  again right after a deadline keeps it; a waiter that died drops out on its
-  own. Before this, the first `Acquire` after a lapse won: on 2026-11-27/28 one
-  session with a green pull request lost go-fleettools/fleettools nine times
+  `claim` — is refused with `QUEUED` and the names ahead of it. The line binds
+  every spelling the lease does (`o/r`, `o-r`, the bare `r`, the organisation
+  `o`), and a holder whose own lease expired or went idle queues like anyone. A
+  place lives three retries (never under a minute) and never more than a minute
+  past its wait's deadline, so running `claim --wait` again right after a
+  deadline keeps it, while a waiter that stopped or died blocks a free resource
+  for at most that minute. `claims` prints `in line:` under each lease, and a
+  `free` row for a line on a resource nobody holds. A torn queue file reads as
+  an empty line (as a torn lease reads as free); an unreadable one is an error.
+  Before this, the first `Acquire` after a lapse won: on 2026-11-27/28 one
+  session with a green pull request lost go-fleettools/fleettools ten times
   running to sessions that arrived later.
 
 `tell` is the answer to a refusal, which until 2026-10-11 was a dead end. A

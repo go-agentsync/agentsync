@@ -2,8 +2,10 @@ package lease
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 )
@@ -303,11 +305,126 @@ func TestAnUnreadableQueueIsNotOverwritten(t *testing.T) {
 func TestAPlaceThatCannotBeWrittenIsAnError(t *testing.T) {
 	t0 := time.Unix(1000, 0)
 	s, _ := clocked(t, t0)
-	if err := os.Mkdir(s.queuePath("o/r")+".tmp", 0o755); err != nil { // writing a directory fails
-		t.Fatal(err)
-	}
+	s.rename = func(string, string) error { return errors.New("injected") }
 	if _, err := s.Wait("o/r", "bob", t0.Add(time.Hour)); err == nil {
 		t.Error("Wait reported a place it never wrote")
+	}
+	// And the private temporary file is not left behind.
+	if left, _ := filepath.Glob(filepath.Join(s.Dir, ".queue-*.tmp")); len(left) != 0 {
+		t.Errorf("a failed write left %v", left)
+	}
+}
+
+func TestATemporaryFileThatCannotBeMadeIsAnError(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root writes to a read-only directory")
+	}
+	s, _ := clocked(t, time.Unix(1000, 0))
+	if err := os.Chmod(s.Dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(s.Dir, 0o755) })
+	if err := s.writeQueue(s.queuePath("o/r"), []Waiter{{Owner: "bob"}}); err == nil {
+		t.Error("writeQueue succeeded in a directory it cannot write")
+	}
+}
+
+// ⛔ Review of #53, CONFIRMED: the line was keyed on the exact file, while the
+// lease conflict spans the dashed, bare and organisation spellings -- so
+// `claim gitsafe` walked past a line kept under go-gitsafe/gitsafe. The line
+// must bind every spelling the lease does.
+func TestNoSpellingWalksPastTheLine(t *testing.T) {
+	for _, other := range []string{"go-gitsafe-gitsafe", "gitsafe", "go-gitsafe", "github.com/go-gitsafe/gitsafe"} {
+		t.Run(other, func(t *testing.T) {
+			t0 := time.Unix(1000, 0)
+			s, _ := clocked(t, t0)
+			mustWait(t, s, "go-gitsafe/gitsafe", "bob", t0.Add(time.Hour))
+			_, err := s.Acquire(other, "carol", "", time.Minute)
+			wantQueued(t, err, "bob")
+			// And the other way round: a line under the other spelling binds
+			// the canonical name.
+			s2, _ := clocked(t, t0)
+			mustWait(t, s2, other, "bob", t0.Add(time.Hour))
+			_, err = s2.Acquire("go-gitsafe/gitsafe", "carol", "", time.Minute)
+			wantQueued(t, err, "bob")
+		})
+	}
+}
+
+// Two lines that are one claim merge by arrival, and a session waiting under
+// two spellings is one place, its earliest.
+func TestLinesUnderTwoSpellingsMergeByArrival(t *testing.T) {
+	t0 := time.Unix(1000, 0)
+	s, now := clocked(t, t0)
+	mustWait(t, s, "gitsafe", "bob", t0.Add(time.Hour))
+	*now = t0.Add(time.Second)
+	mustWait(t, s, "go-gitsafe/gitsafe", "alice", t0.Add(time.Hour))
+	*now = t0.Add(2 * time.Second)
+	mustWait(t, s, "go-gitsafe/gitsafe", "bob", t0.Add(time.Hour))
+	if n := mustWait(t, s, "go-gitsafe/gitsafe", "carol", t0.Add(time.Hour)); n != 2 {
+		t.Errorf("carol has %d ahead, want 2 (bob once, alice)", n)
+	}
+	_, err := s.Acquire("go-gitsafe/gitsafe", "carol", "", time.Minute)
+	wantQueued(t, err, "bob", "alice")
+}
+
+// An unrelated line, or one whose waiters predate the Resource field, binds
+// nothing outside its own file.
+func TestAnUnrelatedLineBindsNothing(t *testing.T) {
+	t0 := time.Unix(1000, 0)
+	s, _ := clocked(t, t0)
+	mustWait(t, s, "go-other/thing", "bob", t0.Add(time.Hour))
+	if err := os.WriteFile(filepath.Join(s.Dir, "legacy.queue"),
+		[]byte(`[{"owner":"old","since":"1970-01-01T00:16:40Z","until":"2100-01-01T00:00:00Z"}]`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Acquire("go-gitsafe/gitsafe", "carol", "", time.Minute); err != nil {
+		t.Fatalf("an unrelated line refused carol: %v", err)
+	}
+	if got := s.Lines(); len(got) != 1 || len(got["go-other/thing"]) != 1 {
+		t.Errorf("Lines = %+v; want only go-other/thing (the legacy line names no resource)", got)
+	}
+}
+
+// ⛔ Review of #53, CONFIRMED: "extending one's own lease" passed whatever the
+// lease's state, so a holder whose lease had EXPIRED got it back ahead of the
+// line -- the lost hand-over this queue exists to stop.
+func TestAnExpiredHolderQueuesLikeAnyone(t *testing.T) {
+	t0 := time.Unix(1000, 0)
+	s, now := clocked(t, t0)
+	if _, err := s.Acquire("o/r", "alice", "", time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	mustWait(t, s, "o/r", "bob", t0.Add(2*time.Hour))
+	*now = t0.Add(time.Hour)
+	_, err := s.Acquire("o/r", "alice", "", time.Minute)
+	wantQueued(t, err, "bob")
+}
+
+// ⛔ Review of #53, CONFIRMED with a stolen lock: concurrent waiters each keep
+// their place. With a fixed temporary name, writers the lock failed to
+// separate renamed each other's file away and 24 of 24 Waits failed.
+func TestConcurrentWaitersAllKeepTheirPlace(t *testing.T) {
+	saved := lockStale
+	lockStale = 0 // every lock looks stale: the lock no longer separates them
+	t.Cleanup(func() { lockStale = saved })
+	s := Store{Dir: t.TempDir()}
+	until := time.Now().Add(time.Hour)
+	var wg sync.WaitGroup
+	errs := make(chan error, 24)
+	for i := 0; i < 24; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			if _, err := s.Wait("o/r", fmt.Sprintf("w%02d", i), until); err != nil {
+				errs <- err
+			}
+		}(i)
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Errorf("a concurrent Wait failed: %v", err)
 	}
 }
 
@@ -318,6 +435,27 @@ func TestALineThatCannotBeEmptiedIsAnError(t *testing.T) {
 	s.remove = func(string) error { return errors.New("injected") }
 	if err := s.Leave("o/r", "bob"); err == nil {
 		t.Error("Leave reported bob gone while his place is still on disk")
+	}
+}
+
+// Only a *.queue file is a line: a stray JSON file that happens to hold
+// waiter-shaped records for the same resource binds nobody.
+func TestOnlyAQueueFileIsALine(t *testing.T) {
+	t0 := time.Unix(1000, 0)
+	s, _ := clocked(t, t0)
+	stray := `[{"resource":"o/r","owner":"ghost","since":"1970-01-01T00:16:40Z","until":"2100-01-01T00:00:00Z"}]`
+	if err := os.WriteFile(filepath.Join(s.Dir, "o_r.json"), []byte(stray), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Acquire("o/r", "carol", "", time.Minute); err != nil {
+		t.Fatalf("a stray file refused carol: %v", err)
+	}
+}
+
+func TestAStoreWithNoDirectoryHasNoLines(t *testing.T) {
+	s := Store{Dir: filepath.Join(t.TempDir(), "never-made")}
+	if got := s.Lines(); len(got) != 0 {
+		t.Errorf("Lines of a store that does not exist = %+v", got)
 	}
 }
 

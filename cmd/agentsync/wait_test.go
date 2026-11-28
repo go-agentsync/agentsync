@@ -223,11 +223,10 @@ func TestAWaitThatCannotTakeItsPlaceSaysSo(t *testing.T) {
 	if _, err := s.Acquire("solo", "alice", "", time.Hour); err != nil {
 		t.Fatal(err)
 	}
-	// The queue's temporary file is a directory, so writing a place fails while
-	// reading the (empty) line and the lease both still work.
-	if err := os.Mkdir(filepath.Join(s.Dir, "solo.queue.tmp"), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	// Taking a place fails while the lease itself still answers Held.
+	saved := waitPlace
+	waitPlace = func(lease.Store, string, string, time.Time) (int, error) { return 0, errors.New("injected") }
+	t.Cleanup(func() { waitPlace = saved })
 	var out bytes.Buffer
 	_, err := waitAcquire(s, "solo", "bob", "", time.Hour, time.Hour, 15*time.Second, c.now, c.sleep, &out)
 	var held *lease.Held
@@ -318,14 +317,61 @@ func mustPlace(t *testing.T, s lease.Store, resource, owner string) {
 	}
 }
 
-func TestAPlaceOutlivesItsWaitByAtLeastAMinute(t *testing.T) {
-	for every, want := range map[time.Duration]time.Duration{
-		time.Second: time.Minute, 15 * time.Second: time.Minute, 20 * time.Second: time.Minute,
-		21 * time.Second: 63 * time.Second, time.Minute: 3 * time.Minute,
+// A place lives three retries, never under a minute -- and never more than a
+// minute past the wait's own deadline.
+func TestAPlaceLivesThreeRetriesButNotPastTheWait(t *testing.T) {
+	now := time.Unix(1000, 0)
+	for _, tc := range []struct {
+		every, wait, want time.Duration // want is from now
+	}{
+		{time.Second, time.Hour, time.Minute},
+		{15 * time.Second, time.Hour, time.Minute},
+		{20 * time.Second, time.Hour, time.Minute},
+		{21 * time.Second, time.Hour, 63 * time.Second},
+		{time.Minute, time.Hour, 3 * time.Minute},
+		{time.Hour, time.Minute, 2 * time.Minute},         // capped: deadline + 1m
+		{time.Minute, 30 * time.Second, 90 * time.Second}, // capped
+		{time.Hour, -time.Minute, time.Minute},            // a deadline already past counts as now
 	} {
-		if got := placeLife(every); got != want {
-			t.Errorf("placeLife(%s) = %s, want %s", every, got, want)
+		if got := placeUntil(now, now.Add(tc.wait), tc.every).Sub(now); got != tc.want {
+			t.Errorf("every %s, wait %s: place lives %s, want %s", tc.every, tc.wait, got, tc.want)
 		}
+	}
+}
+
+// ⛔ Review of #53, CONFIRMED: with --every longer than --wait, one attempt
+// wrote a place of three hours and returned; the resource, once free, refused
+// every claim for those hours behind a session that had stopped waiting.
+func TestALongIntervalDoesNotHoldTheLineForHours(t *testing.T) {
+	s, c := waiting(t, time.Unix(1000, 0))
+	if _, err := s.Acquire("o/r", "alice", "", time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	if _, err := waitAcquire(s, "o/r", "bob", "", time.Hour, time.Minute, time.Hour, c.now, c.sleep, &out); err == nil {
+		t.Fatal("bob got a lease alice holds")
+	}
+	c.t = c.t.Add(3 * time.Minute)
+	if _, err := s.Acquire("o/r", "carol", "", time.Minute); err != nil {
+		t.Fatalf("3 minutes after bob's 1-minute wait ended, carol is still refused: %v", err)
+	}
+}
+
+func TestClaimsShowsTheLineForAFreeResource(t *testing.T) {
+	sandbox(t, "carol-3333")
+	mustPlace(t, store(), "go-x/free", "bob-2222")
+	var err error
+	out := capture(t, func() { err = claims(nil) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"free     go-x/free", "nobody holds it", "in line: bob-2222 since"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("claims does not say %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "nothing is held") || strings.Contains(out, "no resource is claimed") {
+		t.Errorf("claims called a resource with a line unclaimed:\n%s", out)
 	}
 }
 

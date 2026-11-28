@@ -740,7 +740,7 @@ func waitAcquireFor(s lease.Store, resource, owner, note, keep string, ttl, wait
 		// by placeLife on purpose: `claim --wait 9m` run again straight after a
 		// deadline must find its place, not the back of the line -- the
 		// polling this replaces lost exactly that way, nine times running.
-		before, werr := s.Wait(resource, owner, now().Add(placeLife(every)))
+		before, werr := waitPlace(s, resource, owner, placeUntil(now(), stop, every))
 		if werr != nil {
 			return lease.Lease{}, werr
 		}
@@ -767,14 +767,32 @@ func waitAcquireFor(s lease.Store, resource, owner, note, keep string, ttl, wait
 	}
 }
 
-// placeLife is how long a place in line survives without a refresh: three
-// retries, so one slow attempt does not lose it, and never under a minute, so a
-// session re-running `claim --wait` after its deadline is still in line.
-func placeLife(every time.Duration) time.Duration {
-	if l := 3 * every; l > time.Minute {
-		return l
+// placeUntil is when a place taken at now lapses without a refresh: three
+// retries ahead, so one slow attempt does not lose it, and never under a minute,
+// so a session re-running `claim --wait` after its deadline is still in line.
+//
+// ⛔ And never more than a minute PAST THE WAIT'S DEADLINE (review of #53): with
+// `--every 1h` a place of three retries outlived its waiter by hours, and every
+// claim of the then-free resource was QUEUED behind a session that had stopped.
+func placeUntil(now, stop time.Time, every time.Duration) time.Time {
+	life := 3 * every
+	if life < time.Minute {
+		life = time.Minute
 	}
-	return time.Minute
+	until := now.Add(life)
+	if stop.Before(now) {
+		stop = now
+	}
+	if limit := stop.Add(time.Minute); until.After(limit) {
+		return limit
+	}
+	return until
+}
+
+// waitPlace is lease.Store.Wait, replaceable so a test can make it fail while
+// the lease itself still answers.
+var waitPlace = func(s lease.Store, resource, owner string, until time.Time) (int, error) {
+	return s.Wait(resource, owner, until)
 }
 
 func claim(args []string) error {
@@ -1034,7 +1052,8 @@ func claims(args []string) error {
 	if err != nil {
 		return err
 	}
-	if len(ls) == 0 {
+	lines := store().Lines()
+	if len(ls) == 0 && len(lines) == 0 {
 		fmt.Println("no resource is claimed")
 		return nil
 	}
@@ -1063,20 +1082,48 @@ func claims(args []string) error {
 		if q, qerr := store().Queue(l.Resource); qerr != nil {
 			fmt.Printf("         in line: unreadable (%v)\n", qerr)
 		} else if len(q) > 0 {
-			names := make([]string, len(q))
-			for i, w := range q {
-				names[i] = fmt.Sprintf("%s since %s", short(w.Owner), w.Since.Format("15:04:05"))
-			}
-			fmt.Printf("         in line: %s\n", strings.Join(names, ", "))
+			fmt.Printf("         in line: %s\n", lineText(q))
 		}
+	}
+	// ⛔ A line with no lease row above it is printed too: a FREE resource that
+	// refuses a claim as QUEUED is exactly what a session runs `claims` to
+	// understand (review of #53), and it has no row to hang from.
+	var free []string
+	for r := range lines {
+		if !shownFor(shown, r) {
+			free = append(free, r)
+		}
+	}
+	sort.Strings(free)
+	for _, r := range free {
+		fmt.Printf("%-8s %-42s nobody holds it\n         in line: %s\n", "free", r, lineText(lines[r]))
 	}
 	if hidden > 0 {
 		fmt.Printf("\n%d expired lease(s) not shown; --all to see them.\n", hidden)
 	}
-	if len(shown) == 0 {
+	if len(shown) == 0 && len(free) == 0 {
 		fmt.Println("nothing is held right now.")
 	}
 	return nil
+}
+
+func lineText(q []lease.Waiter) string {
+	names := make([]string, len(q))
+	for i, w := range q {
+		names[i] = fmt.Sprintf("%s since %s", short(w.Owner), w.Since.Format("15:04:05"))
+	}
+	return strings.Join(names, ", ")
+}
+
+// shownFor reports whether a lease row for resource (under any spelling that is
+// the same file) is already printed, with its line under it.
+func shownFor(shown []lease.Lease, resource string) bool {
+	for _, l := range shown {
+		if lease.Normalize(l.Resource) == lease.Normalize(resource) {
+			return true
+		}
+	}
+	return false
 }
 
 // visible is the decision claims makes, kept separate from the printing so it can be
