@@ -715,6 +715,9 @@ func waitAcquireFor(s lease.Store, resource, owner, note, keep string, ttl, wait
 	for attempts := 1; ; attempts++ {
 		if wanted != nil {
 			if err := wanted(); err != nil {
+				// Out of the line too: a session that no longer wants the lease
+				// must not make the next one wait for its place to lapse.
+				_ = s.Leave(resource, owner)
 				return lease.Lease{}, err
 			}
 		}
@@ -726,19 +729,34 @@ func waitAcquireFor(s lease.Store, resource, owner, note, keep string, ttl, wait
 			return l, nil
 		}
 		var held *lease.Held
-		if !errors.As(err, &held) {
+		var queued *lease.Queued
+		if !errors.As(err, &held) && !errors.As(err, &queued) {
 			// Not "somebody holds it" but "the store would not answer". Waiting
 			// on that would spend the whole deadline reporting nothing.
+			_ = s.Leave(resource, owner)
 			return lease.Lease{}, err
+		}
+		// Take, or keep, this session's place in line. ⛔ It outlives the wait
+		// by placeLife on purpose: `claim --wait 9m` run again straight after a
+		// deadline must find its place, not the back of the line -- the
+		// polling this replaces lost exactly that way, nine times running.
+		before, werr := s.Wait(resource, owner, now().Add(placeLife(every)))
+		if werr != nil {
+			return lease.Lease{}, werr
 		}
 		if !announced {
 			// Said ONCE. Repeating the holder and their note on every retry
 			// teaches the reader to skim the line that matters.
-			fmt.Fprintf(out, "WAITING  %s\n         held by %s until %s\n",
-				resource, short(held.By.Owner), held.By.Expires.Format("15:04:05"))
-			if held.By.Note != "" {
-				fmt.Fprintf(out, "         %q\n", held.By.Note)
+			if held != nil {
+				fmt.Fprintf(out, "WAITING  %s\n         held by %s until %s\n",
+					resource, short(held.By.Owner), held.By.Expires.Format("15:04:05"))
+				if held.By.Note != "" {
+					fmt.Fprintf(out, "         %q\n", held.By.Note)
+				}
+			} else {
+				fmt.Fprintf(out, "WAITING  %s\n         free, but it is not your turn\n", resource)
 			}
+			fmt.Fprintf(out, "         in line: %d session(s) ahead of you, first come first served\n", before)
 			fmt.Fprintf(out, "         retrying every %s until %s\n", every, stop.Format("15:04:05"))
 			announced = true
 		}
@@ -747,6 +765,16 @@ func waitAcquireFor(s lease.Store, resource, owner, note, keep string, ttl, wait
 		}
 		sleep(every)
 	}
+}
+
+// placeLife is how long a place in line survives without a refresh: three
+// retries, so one slow attempt does not lose it, and never under a minute, so a
+// session re-running `claim --wait` after its deadline is still in line.
+func placeLife(every time.Duration) time.Duration {
+	if l := 3 * every; l > time.Minute {
+		return l
+	}
+	return time.Minute
 }
 
 func claim(args []string) error {
@@ -802,10 +830,18 @@ func claim(args []string) error {
 			l, err = s.AcquireKeep(r, owner(), *note, *keep, *ttl)
 		}
 		var held *lease.Held
+		var queued *lease.Queued
 		switch {
 		case errors.Is(err, errRequesterGone):
 			failed = true
 			fmt.Printf("DROPPED  %s\n         %v\n", r, err)
+		case errors.As(err, &queued):
+			failed = true
+			fmt.Printf("QUEUED   %s\n         free, but %d session(s) waited longer; your turn comes after:\n", r, len(queued.Ahead))
+			for _, w := range queued.Ahead {
+				fmt.Printf("         %s, waiting since %s\n", short(w.Owner), w.Since.Format("15:04:05"))
+			}
+			fmt.Printf("         wait your turn: agentsync claim --wait <d> %s\n", r)
 		case errors.As(err, &held):
 			failed = true
 			fmt.Printf("REFUSED  %s\n         held by %s until %s\n", r, short(held.By.Owner), held.By.Expires.Format("15:04:05"))
@@ -1021,6 +1057,17 @@ func claims(args []string) error {
 		}
 		if l.Note != "" {
 			fmt.Printf("         %q\n", l.Note)
+		}
+		// The line behind the holder (agentsync#42): who gets it next is what a
+		// session reading this list is deciding about.
+		if q, qerr := store().Queue(l.Resource); qerr != nil {
+			fmt.Printf("         in line: unreadable (%v)\n", qerr)
+		} else if len(q) > 0 {
+			names := make([]string, len(q))
+			for i, w := range q {
+				names[i] = fmt.Sprintf("%s since %s", short(w.Owner), w.Since.Format("15:04:05"))
+			}
+			fmt.Printf("         in line: %s\n", strings.Join(names, ", "))
 		}
 	}
 	if hidden > 0 {

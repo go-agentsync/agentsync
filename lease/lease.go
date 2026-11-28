@@ -380,7 +380,34 @@ func (s Store) AcquireKeep(resource, owner, note, keep string, ttl time.Duration
 	if held := s.overlapping(p, Normalize(resource), owner, now); held != nil {
 		return Lease{}, &Held{By: *held}
 	}
+	// ⛔ FIRST COME, FIRST SERVED (queue.go says why). Sessions waiting longer
+	// get a lease that is free or takeable before this one does. A live lease
+	// held by someone else is still reported as Held -- who holds it is the more
+	// useful answer -- and a holder extending its own lease jumps nobody.
+	line, err := s.waitersAhead(resource, owner, now)
+	if err != nil {
+		return Lease{}, err
+	}
+	if len(line) > 0 {
+		cur, rerr := s.read(p)
+		switch {
+		case rerr == nil && cur.Owner == owner:
+		case rerr == nil && !cur.Takeable(now, s.Idle):
+			return Lease{}, &Held{By: cur}
+		default:
+			return Lease{}, &Queued{Resource: resource, Ahead: line}
+		}
+	}
+	got, err := s.acquire(p, body, l, owner, now, resource)
+	if err == nil {
+		// Best effort: the lease is ours, and a place left in line lapses on its
+		// own at its Until.
+		_ = s.Leave(resource, owner)
+	}
+	return got, err
+}
 
+func (s Store) acquire(p string, body []byte, l Lease, owner string, now time.Time, resource string) (Lease, error) {
 	for attempt := 0; attempt < 2; attempt++ {
 		err := createExclusive(p, body)
 		if err == nil {

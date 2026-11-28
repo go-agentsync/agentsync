@@ -137,6 +137,16 @@ Each is now a tool's job:
   every attempt, whether the session's transcript was written in the last
   12 minutes (`AGENTSYNC_WAIT_GRACE`; a foreground command cannot outlast ten).
   An unknown session or an unreadable transcript is never dropped.
+- **Waiting is first come, first served.** A `claim --wait` that is refused
+  takes a place in line (`locks/<resource>.queue`) and keeps it while it
+  retries. When the lease lapses, is released or goes idle, only the session
+  that has waited longest may take it; anyone else — a later waiter or a plain
+  `claim` — is refused with `QUEUED` and the names ahead of it. A place outlives
+  its wait by three retries (never under a minute), so running `claim --wait`
+  again right after a deadline keeps it; a waiter that died drops out on its
+  own. Before this, the first `Acquire` after a lapse won: on 2026-11-27/28 one
+  session with a green pull request lost go-fleettools/fleettools nine times
+  running to sessions that arrived later.
 
 `tell` is the answer to a refusal, which until 2026-10-11 was a dead end. A
 refusal names the holder and prints their note — which tells the refused session
@@ -217,8 +227,8 @@ decides to act anyway, which is the collision this tool exists to prevent.
 
     agentsync claim --wait 30m --note "tag v0.8.2 once their work lands" go-embedded-ruby/ruby
 
-It says who holds it and why **once**, not on every retry, and then one line
-when it gets in. If the deadline passes it returns the holder's refusal
+It says who holds it and why **once**, not on every retry, with how many
+sessions are ahead of it in line, and then one line when it gets in. If the deadline passes it returns the holder's refusal
 unchanged, so a session that waited and still did not get in reads exactly what
 it would have read at once.
 
@@ -229,7 +239,8 @@ prevent. `--every 0` is refused too: that is a busy loop, not a wait.
 
 ⛔ It waits for a lease to **lapse**, not for the holder to finish. A holder who
 renews keeps it, and a holder who dies releases it at the TTL rather than never
-— which is why leases expire at all.
+— which is why leases expire at all. When it lapses it goes to the session
+that has waited **longest**, not to whichever asks first.
 
 **A resource has one name, whatever you type.** `github.com/go-ansible/.github`,
 `https://github.com/go-ansible/.github.git`, `git@github.com:go-ansible/.github`
