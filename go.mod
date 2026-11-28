@@ -16,6 +16,6 @@ module github.com/go-agentsync/agentsync
 go 1.27.4
 
 require (
-	github.com/go-gitsafe/gitsafe v0.59.0
+	github.com/go-gitsafe/gitsafe v0.70.0
 	golang.org/x/mod v0.43.0
 )
